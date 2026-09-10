@@ -1,0 +1,49 @@
+# Docker Compose for Claude Code Dev Container (C)
+#
+# Container naming: Uses PROJECT_NAME env var with -dev suffix
+# Example: PROJECT_NAME=myproject creates group "myproject-dev"
+#
+# Environment variables:
+#   PROJECT_NAME  - Project identifier (required)
+#   GIT_PORT      - Git daemon port (default: 47418)
+
+name: codebase-memory-cli-dev
+
+services:
+  dev:
+    container_name: codebase-memory-cli
+    image: codebase-memory-cli-c
+    build:
+      context: .
+      dockerfile: Dockerfile
+    labels:
+      # Dev Container labels for IDE detection (JetBrains Rider, VS Code, JetBrains Gateway)
+      - "devcontainer.local_folder=${LOCAL_WORKSPACE_FOLDER:-/tmp}"
+      - "devcontainer.config_file=${LOCAL_WORKSPACE_FOLDER:-/tmp}/.devcontainer/devcontainer.json"
+      - "devcontainer.metadata=[{\"remoteUser\":\"claude\",\"remoteEnv\":{\"DEVCONTAINER\":\"true\"}}]"
+    volumes:
+      # Named Docker volumes for isolation and persistence
+      # Note: We DON'T mount the entire home directory as that would wipe shell configs
+      - claude-workspace:/workspace
+      - claude-data:/home/claude/.claude
+      - claude-home:/home/claude/.opencode
+      - zsh-history:/home/claude/.zsh_history_dir
+      - jb-config:/.jbdevcontainer
+    ports:
+      # git-daemon - localhost only! Port configurable via GIT_PORT env var
+      - "127.0.0.1:47418:47418"
+    env_file:
+      - ../.env.devcontainer
+    environment:
+      - DEVCONTAINER=true
+      - GIT_DAEMON_PORT=47418
+      - PROJECT_NAME=codebase-memory-cli
+    stdin_open: true
+    tty: true
+
+volumes:
+  claude-workspace:
+  claude-data:
+  claude-home:
+  zsh-history:
+  jb-config:

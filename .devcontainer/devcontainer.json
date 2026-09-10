@@ -1,0 +1,29 @@
+{
+  "name": "C Dev Container",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspace",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "webfreak.debug",
+        "eamodio.gitlens"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "git.autofetch": false
+      }
+    },
+    "jetbrains": {
+      "backend": "CLion"
+    }
+  },
+
+  "remoteUser": "claude",
+
+  "postCreateCommand": "/usr/local/bin/setup-workspace.sh",
+  "postStartCommand": "echo '\\n🤖 Container ready. Run: claude --dangerously-skip-permissions\\n'"
+}
