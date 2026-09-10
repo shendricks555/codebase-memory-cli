@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git show*)",
+      "Bash(ls*)",
+      "Bash(grep*)",
+      "Bash(rg*)",
+      "Bash(find*)",
+      "Bash(jq*)",
+      "Bash(scripts/build.sh*)",
+      "Bash(scripts/test.sh*)",
+      "Bash(scripts/lint.sh*)",
+      "Bash(make -f Makefile.cbm*)"
+    ],
+    "deny": [
+      "Bash(curl*)",
+      "Bash(wget*)",
+      "Bash(nc*)",
+      "Bash(ncat*)",
+      "Bash(ssh*)",
+      "Bash(scp*)",
+      "Bash(telnet*)"
+    ]
+  }
+}

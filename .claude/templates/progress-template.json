@@ -1,0 +1,29 @@
+{
+  "feature": "",
+  "directory": "",
+  "created": "",
+  "lastUpdated": "",
+  "currentPhase": 0,
+  "phases": [
+    {
+      "phase": 0,
+      "name": "Build/config",
+      "status": "pending",
+      "tasks": [],
+      "notes": "",
+      "verified": {}
+    }
+  ],
+  "evals": [
+    {
+      "id": "",
+      "description": "",
+      "type": "unit",
+      "phase": 0,
+      "verifiedBy": "",
+      "passes": false
+    }
+  ],
+  "deferredVerification": [],
+  "sessions": []
+}
