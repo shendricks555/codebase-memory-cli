@@ -16,7 +16,12 @@
 #include "daemon/bootstrap.h"
 #include "daemon/ipc.h"
 #include "daemon/runtime.h"
+#ifndef CBM_FORK_CLI_ONLY
+/* Fork CLI-only: the version_cohort admission barrier coordinates the (removed)
+ * daemon cohort. The guarded single-process build neither needs nor engages it;
+ * the install/update activation guard becomes a direct pass-through below. */
 #include "daemon/version_cohort.h"
+#endif
 #include "foundation/compat.h"
 #include "foundation/platform.h"
 #include "foundation/constants.h"
@@ -194,8 +199,10 @@ static const char CLI_ACTIVATION_MUTATION_FAILED_MESSAGE[] =
 
 typedef struct {
     cbm_daemon_ipc_endpoint_t *endpoint;
+#ifndef CBM_FORK_CLI_ONLY
     cbm_version_cohort_manager_t *cohort_manager;
     cbm_version_cohort_lease_t *cohort_lease;
+#endif
     cbm_daemon_ipc_startup_lock_t *startup_lock;
     cbm_daemon_build_identity_t identity;
     char source_build[CBM_DAEMON_BUILD_FINGERPRINT_SIZE];
@@ -339,6 +346,7 @@ static const char *cli_activation_action_text(cbm_daemon_runtime_activation_acti
     }
 }
 
+#ifndef CBM_FORK_CLI_ONLY
 static uint64_t cli_activation_deadline_after(uint32_t timeout_ms) {
     uint64_t now = cbm_now_ms();
     if (now >= UINT64_MAX - (uint64_t)timeout_ms - 1U) {
@@ -346,6 +354,7 @@ static uint64_t cli_activation_deadline_after(uint32_t timeout_ms) {
     }
     return now + (uint64_t)timeout_ms;
 }
+#endif
 
 static uint64_t cli_activation_process_id(void) {
 #ifdef _WIN32
@@ -412,6 +421,7 @@ static bool cli_activation_log_event(cli_activation_production_context_t *contex
     return written;
 }
 
+#ifndef CBM_FORK_CLI_ONLY
 static int cli_activation_startup_lock_acquire(cli_activation_production_context_t *context) {
     if (!context || !context->endpoint) {
         return CLI_ERR;
@@ -433,6 +443,7 @@ static int cli_activation_startup_lock_acquire(cli_activation_production_context
     } while (cbm_now_ms() < context->control_deadline_ms);
     return 0;
 }
+#endif
 
 static _Noreturn void cli_activation_cleanup_fail_stop(cli_activation_production_context_t *context,
                                                        const char *component) {
@@ -447,6 +458,7 @@ static _Noreturn void cli_activation_cleanup_fail_stop(cli_activation_production
     _Exit(EXIT_FAILURE);
 }
 
+#ifndef CBM_FORK_CLI_ONLY
 static void cli_activation_startup_lock_release_complete(
     cli_activation_production_context_t *context) {
     uint64_t deadline = cli_activation_deadline_after(CLI_ACTIVATION_CONTROL_TIMEOUT_MS);
@@ -734,7 +746,27 @@ static void cli_activation_production_context_close(cli_activation_production_co
     free(context->original_cache_environment);
     context->original_cache_environment = NULL;
 }
+#endif /* CBM_FORK_CLI_ONLY (version_cohort activation machinery) */
 
+#ifdef CBM_FORK_CLI_ONLY
+/* Fork CLI-only: no shared daemon cohort exists to drain before an install/
+ * update/uninstall binary swap, so the activation guard runs its mutation
+ * directly. The test-ops seam is preserved so activation tests keep their
+ * injected coordination. project_lock (graph-mutation serialization) is
+ * unaffected — it was never part of this cohort barrier. */
+static int cli_activation_guard(cbm_daemon_runtime_activation_action_t action,
+                                const char *target_version, const char *target_build,
+                                cbm_cli_activation_mutation_fn mutation, void *mutation_context) {
+    (void)action;
+    (void)target_version;
+    (void)target_build;
+    if (g_cli_activation_test_ops_set) {
+        return cbm_cli_activation_guard_with_ops(&g_cli_activation_test_ops, mutation,
+                                                 mutation_context);
+    }
+    return mutation ? mutation(mutation_context) : CLI_OK;
+}
+#else
 static int cli_activation_guard(cbm_daemon_runtime_activation_action_t action,
                                 const char *target_version, const char *target_build,
                                 cbm_cli_activation_mutation_fn mutation, void *mutation_context) {
@@ -792,6 +824,7 @@ static int cli_activation_guard(cbm_daemon_runtime_activation_action_t action,
     }
     return rc;
 }
+#endif /* CBM_FORK_CLI_ONLY (activation guard) */
 
 /* Tar header field offsets */
 #define TAR_NAME_LEN 101    /* filename field: bytes 0-99 + NUL */

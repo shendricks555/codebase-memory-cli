@@ -224,6 +224,11 @@ static char *yy_final_doc_to_str(yyjson_mut_doc *doc) {
  *  JSON-RPC PARSING
  * ══════════════════════════════════════════════════════════════════ */
 
+/* CBM_FORK_CLI_ONLY (default-undefined): fences the JSON-RPC/stdio transport
+ * out of this TU so the tool engine below can build without it. The seam is
+ * one-way — the engine never calls transport — so removing it here cannot
+ * break the engine. Additive removal-prep for the fork; default build unchanged. */
+#ifndef CBM_FORK_CLI_ONLY
 int cbm_jsonrpc_parse(const char *line, cbm_jsonrpc_request_t *out) {
     memset(out, 0, sizeof(*out));
     out->id = CBM_NOT_FOUND;
@@ -352,6 +357,7 @@ char *cbm_jsonrpc_format_error(int64_t id, int code, const char *message) {
     free(encoded_message);
     return out;
 }
+#endif /* CBM_FORK_CLI_ONLY (JSON-RPC transport) */
 
 /* ══════════════════════════════════════════════════════════════════
  *  MCP PROTOCOL HELPERS
@@ -1077,6 +1083,13 @@ char *cbm_mcp_tools_help_list(void) {
     return out;
 }
 
+/* CBM_FORK_CLI_ONLY: tools/list paging + prompts/list + prompts/get response
+ * builders are MCP-protocol-method transport, reached only from the JSON-RPC
+ * router. Fenced with the transport so the engine TU has no unused-static
+ * remnants; default build unchanged. (cbm_mcp_initialize_response_for_profile
+ * below stays — it is also reached by cbm_mcp_initialize_response, which the
+ * CLI/tests use.) */
+#ifndef CBM_FORK_CLI_ONLY
 static int mcp_tools_cursor_offset(const char *params_json, bool *has_cursor_out) {
     if (has_cursor_out) {
         *has_cursor_out = false;
@@ -1301,6 +1314,7 @@ static char *cbm_mcp_prompt_get(const char *params_json, char **error_json) {
     yyjson_doc_free(params_doc);
     return result;
 }
+#endif /* CBM_FORK_CLI_ONLY (tools/list + prompts protocol builders) */
 
 /* Supported protocol versions, newest first. The server picks the newest
  * version that it shares with the client (per MCP spec version negotiation). */
@@ -17370,6 +17384,14 @@ char *cbm_mcp_handle_tool(cbm_mcp_server_t *srv, const char *tool_name, const ch
     return result;
 }
 
+/* CBM_FORK_CLI_ONLY: everything from session detection through the JSON-RPC
+ * method router (cbm_mcp_server_handle), the message reader
+ * (cbm_mcp_read_message), and the stdio event loop (cbm_mcp_server_run) is the
+ * MCP transport. Session/auto-index-on-initialize helpers are reached only from
+ * the router, so they are fenced together. The engine entry point
+ * cbm_mcp_handle_tool above is outside this block and stays. Default build
+ * unchanged. */
+#ifndef CBM_FORK_CLI_ONLY
 /* ── Session detection + auto-index ────────────────────────────── */
 
 /* Detect session root from CWD (fallback: single indexed project from DB). */
@@ -18084,6 +18106,7 @@ int cbm_mcp_server_run(cbm_mcp_server_t *srv, FILE *in, FILE *out) {
 
     return 0;
 }
+#endif /* CBM_FORK_CLI_ONLY (session/auto-index + JSON-RPC router + stdio loop) */
 
 /* ── cbm_parse_file_uri ──────────────────────────────────────── */
 

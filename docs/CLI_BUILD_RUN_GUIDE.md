@@ -1,99 +1,116 @@
 # Codebase Memory CLI — Build & Run Guide
 
-This guide walks through starting the dev container, building the CLI, and
-generating a basic code graph for `src`.
+This guide walks through building this **pure-C11** project from source and using it as a local,
+network-free CLI to index a repository and query its code graph.
+
+> **This is the CLI-only, no-MCP, no-network fork.** See "About this fork" in the top-level
+> [README](../README.md). The codebase was rewritten from Go to **pure C11** at upstream v0.5.0 —
+> there is no `go.mod`, no `cmd/`, no Cobra, and no `go build`. Everything is built with
+> `scripts/build.sh` / `Makefile.cbm`, and all third-party code (tree-sitter grammars, SQLite,
+> yyjson, mimalloc, …) is vendored and compiled in.
 
 ## Process Overview
 
 ```mermaid
 flowchart TD
-    A[Clone / Open Project in Rider] --> B{.env.devcontainer exists?}
-    B -- No --> C[Create .env.devcontainer<br/>with PROJECT_NAME, GIT_PORT]
-    B -- Yes --> D[Reopen Project in Dev Container]
-    C --> D
-    D --> E[Container builds via Dockerfile]
-    E --> F[Workspace mounted at /workspace]
-    F --> G[Locate build entry point<br/>go.mod / cmd/ / Makefile]
-    G --> H[Build CLI binary<br/>go build or make build]
-    H --> I[Run --help to discover subcommands]
-    I --> J[Run graph/index subcommand against ./src]
-    J --> K[Inspect generated code graph output]
+    A[Clone the repo] --> B{Use the dev container?}
+    B -- Yes --> C[Reopen in Dev Container<br/>workspace mounted at /workspace]
+    B -- No --> D[Ensure C11 toolchain + make<br/>node only if you want the UI]
+    C --> E[Build: scripts/build.sh]
+    D --> E
+    E --> F[Binary at build/c/codebase-memory-mcp]
+    F --> G[cli --json index_repository]
+    G --> H[cli --json search_graph / get_architecture / trace_path]
+    H --> I[Inspect JSON output / open localhost UI]
 ```
 
 ## Runbook
 
-### 1. Prepare Environment File
+### 1. Prerequisites
 
-Create `.env.devcontainer` at the project root if it doesn't exist:
+- A C11 compiler (clang or gcc) and `make`.
+- `node` **only** if you want to bundle the graph-viz UI (`--with-ui`).
+- No language runtime and no network access are needed to build or run.
 
-```bash
-PROJECT_NAME=codebase-memory-cli
-GIT_PORT=47418
-```
+Optionally use the bundled dev container: JetBrains IDEs / VS Code detect
+`.devcontainer/devcontainer.json` and offer to reopen the project in the container, where the
+workspace is mounted at `/workspace`.
 
-### 2. Open in Dev Container
-
-In JetBrains Rider:
-
-1. Open the project root.
-2. Rider detects `.devcontainer/devcontainer.json` and prompts to reopen in container.
-3. Confirm — this triggers `docker-compose` to build/start the `dev` service.
-
-### 3. Verify Workspace Mount
-
-Inside the container terminal:
+### 2. Build the binary
 
 ```bash
-cd /workspace
-ls
+# Standard release build
+scripts/build.sh
+# Output: build/c/codebase-memory-mcp
+
+# Or bundle the localhost graph UI (needs node)
+scripts/build.sh --with-ui
+
+# Equivalent make targets
+make -f Makefile.cbm cbm            # production binary
+make -f Makefile.cbm test           # build with ASan+UBSan and run the test suite
 ```
 
-Confirm `go.mod`, `src`, and any `cmd/` directory are visible.
+> **Fork roadmap:** the dedicated CLI-only artifact `codebase-memory-cli` — built via
+> `scripts/build.sh --cli-only` with the MCP server and coordination daemon compiled out behind the
+> `CBM_FORK_CLI_ONLY` guard — is tracked on the roadmap (`.claude/planning/active/ROADMAP.md`) and
+> not yet available. Use the standard binary and its `cli` subcommand below in the meantime; the
+> query behavior is the same.
 
-### 4. Locate Build Entry Point
+### 3. Discover the interface
 
 ```bash
-find . -name "main.go" -not -path "*/vendor/*"
-cat Makefile 2>/dev/null
+build/c/codebase-memory-mcp --help
+build/c/codebase-memory-mcp cli <tool> --help
 ```
 
-### 5. Build the CLI
-
-Using Go directly:
+### 4. Index a repository
 
 ```bash
-go build -o bin/codebase-memory-cli ./cmd/...
+cd /path/to/your/repo
+/path/to/build/c/codebase-memory-mcp cli --json index_repository
 ```
 
-Or via Makefile (if present):
+### 5. Query the code graph
 
 ```bash
-make build
+# Structural symbol search (preferred over grep for code)
+codebase-memory-mcp cli --json search_graph --query <symbol>
+
+# Module structure / architecture overview
+codebase-memory-mcp cli --json get_architecture
+
+# Callers/callees before changing a function
+codebase-memory-mcp cli --json trace_path --from <symbol>
+
+# Multi-hop structural questions via Cypher
+codebase-memory-mcp cli --json query_graph --query "<cypher>"
+
+# Exact source for one located symbol
+codebase-memory-mcp cli --json get_code_snippet --symbol <qualified-name>
 ```
 
-### 6. Discover Available Commands
+### 6. Inspect output
+
+`cli --json <tool>` prints the raw result envelope; most tools also accept `--format json` for a
+stable per-tool JSON object. Pipe into `jq` for scripting:
 
 ```bash
-./bin/codebase-memory-cli --help
+codebase-memory-mcp cli --json get_architecture | jq '.'
 ```
 
-### 7. Generate a Basic Code Graph
+### 7. Graph UI (localhost only)
 
-Replace `graph` with the actual subcommand name once confirmed from `--help` output:
-
-```bash
-./bin/codebase-memory-cli graph --src ./src --output graph.json
-```
-
-### 8. Inspect Output
-
-```bash
-cat graph.json | head -n 50
-```
+Build with `--with-ui`; the UI is served over HTTP on **`127.0.0.1:9749`** (loopback only, CORS/Host
+loopback-enforced). In this fork it is started on-demand by the CLI, not by a background daemon; the
+dedicated `ui` subcommand is tracked on the roadmap.
 
 ## Notes
 
-- Exact subcommand names depend on the CLI's Cobra/argument setup — confirm via `--help`.
-- Ports are bound to `127.0.0.1` only (`GIT_PORT`), so access git-daemon locally via `localhost:47418`.
-- Named volumes (`claude-workspace`, etc.) persist state between container restarts.
-
+- This fork makes **no outbound network connections** — no update checks, no telemetry. That
+  property is enforced by the project's security audit (`make -f Makefile.cbm security`), which the
+  fork tightens to forbid any non-loopback egress.
+- The only listening socket is the opt-in localhost graph UI. There is no MCP server and no daemon
+  socket.
+- Confirm exact subcommand names/flags with `--help`; the tool list and per-tool arguments are the
+  source of truth.

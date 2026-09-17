@@ -40,6 +40,11 @@ typedef struct {
 
 /* ── JSON-RPC parsing / formatting ────────────────────────────── */
 
+/* CBM_FORK_CLI_ONLY (default-undefined): these are the JSON-RPC transport
+ * functions whose definitions in mcp.c are fenced under the same guard. The
+ * cbm_jsonrpc_request_t / _response_t types above stay unguarded — the daemon
+ * (src/daemon/frontend.c) uses them independently of this transport. */
+#ifndef CBM_FORK_CLI_ONLY
 /* Parse a JSON-RPC request line. Returns 0 on success, -1 on error.
  * Caller must call cbm_jsonrpc_request_free(). */
 int cbm_jsonrpc_parse(const char *line, cbm_jsonrpc_request_t *out);
@@ -50,6 +55,7 @@ char *cbm_jsonrpc_format_response(const cbm_jsonrpc_response_t *resp);
 
 /* Format a JSON-RPC error response. Returns heap-allocated JSON string. */
 char *cbm_jsonrpc_format_error(int64_t id, int code, const char *message);
+#endif /* CBM_FORK_CLI_ONLY (JSON-RPC transport) */
 
 /* ── MCP protocol helpers ─────────────────────────────────────── */
 
@@ -195,6 +201,10 @@ void cbm_mcp_server_set_project_mutation_guard(cbm_mcp_server_t *srv,
 void cbm_mcp_server_set_project_mutation_try_guard(cbm_mcp_server_t *srv,
                                                    cbm_mcp_project_mutation_try_begin_fn try_begin);
 
+/* CBM_FORK_CLI_ONLY (default-undefined): the stdio message reader, the event
+ * loop, and the JSON-RPC method router are transport; their definitions in
+ * mcp.c are fenced under the same guard. */
+#ifndef CBM_FORK_CLI_ONLY
 /* Read one complete MCP message from in. Supports newline-delimited JSON and
  * Content-Length framing, including additional headers. Returns 1 on success,
  * 0 on clean EOF, and -1 on invalid input or an I/O/allocation error. On
@@ -209,6 +219,7 @@ int cbm_mcp_server_run(cbm_mcp_server_t *srv, FILE *in, FILE *out);
 /* Process a single JSON-RPC request line and return the response.
  * Returns heap-allocated JSON response string, or NULL for notifications. */
 char *cbm_mcp_server_handle(cbm_mcp_server_t *srv, const char *line);
+#endif /* CBM_FORK_CLI_ONLY (stdio transport + JSON-RPC router) */
 
 /* ── Tool handler dispatch (for testing) ──────────────────────── */
 

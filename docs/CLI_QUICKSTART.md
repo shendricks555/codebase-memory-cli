@@ -1,66 +1,88 @@
 # Codebase Memory CLI — Quickstart
 
-Quick reference for building and running the CLI to generate a code graph.
-For the full step-by-step walkthrough with diagram, see
+Quick reference for building this **pure-C11** project from source and running it as a local
+CLI to generate and query a code graph. For the full walkthrough with a diagram, see
 [CLI_BUILD_RUN_GUIDE.md](./CLI_BUILD_RUN_GUIDE.md).
 
-## 1. Start the Dev Container
+> **This is the CLI-only, no-MCP, no-network fork.** See the "About this fork" section in the
+> top-level [README](../README.md). There is **no Go toolchain** here — the project was rewritten
+> from Go to pure C11 at upstream v0.5.0. Do not run `go build`.
 
-This project uses a `.devcontainer` with Docker Compose.
+## 1. Prerequisites
 
-1. Open the project in JetBrains Rider — it should detect
-   `.devcontainer/devcontainer.json` and prompt to reopen in container.
-2. Ensure a `.env.devcontainer` file exists at the project root (referenced
-   by `env_file`), since the compose file requires it to start.
-3. Once inside the container, your workspace is mounted at `/workspace`.
+A C11 toolchain (clang or gcc), `make`, and — only if you want the graph UI bundled — `node`.
+Everything else (tree-sitter grammars, SQLite, yyjson, mimalloc, …) is **vendored** and compiled
+into the binary. No language runtime, no network fetch at build time.
 
-## 2. Identify the Build Entry Point
+The repo also ships a `.devcontainer` (Docker Compose); JetBrains IDEs and VS Code will offer to
+reopen the project in the container, where your workspace is mounted at `/workspace`.
 
-Given the project uses `go.mod`, this is a Go-based CLI. Look for:
+## 2. Build
 
-- A `main.go` or `cmd/` directory (e.g., `cmd/codebase-memory-cli/main.go`)
-- A `Makefile` or `justfile` that defines a `build` target
-
-## 3. Build
-
-If a `Makefile` exists:
+Standard release build:
 
 ```bash
-make build
+scripts/build.sh
+# -> build/c/codebase-memory-mcp
 ```
 
-Otherwise, build directly with Go:
+With the localhost graph-viz UI bundled in (needs node):
 
 ```bash
-go build -o bin/codebase-memory-cli ./cmd/...
+scripts/build.sh --with-ui
 ```
 
-## 4. Run the CLI
-
-Run with `--help` to discover available subcommands:
+Equivalent via make:
 
 ```bash
-./bin/codebase-memory-cli --help
+make -f Makefile.cbm cbm
 ```
 
-## 5. Generate a Code Graph
+> **Fork roadmap:** a dedicated CLI-only binary (`codebase-memory-cli`, built via
+> `scripts/build.sh --cli-only`, with the MCP server and coordination daemon compiled out) is
+> tracked on the roadmap and not yet wired up. Until then, use the standard build above and the
+> `cli` subcommand below — the query behavior is identical.
 
-Look for a subcommand like `graph`, `scan`, or `index`. Typical invocation:
+## 3. Run a tool (one-shot CLI)
+
+The binary runs any tool locally and exits via the `cli` subcommand:
 
 ```bash
-./bin/codebase-memory-cli graph --src ./src --output graph.json
+build/c/codebase-memory-mcp --help
+build/c/codebase-memory-mcp cli --json <tool> [args]
 ```
 
-or
+## 4. Index a repository, then query it
 
 ```bash
-./bin/codebase-memory-cli index ./src
+# Build/refresh the code graph for the current repo
+build/c/codebase-memory-mcp cli --json index_repository
+
+# Structural search
+build/c/codebase-memory-mcp cli --json search_graph --query cbm_mcp_handle_tool
+
+# Orient on module structure
+build/c/codebase-memory-mcp cli --json get_architecture
+
+# Callers/callees of a symbol
+build/c/codebase-memory-mcp cli --json trace_path --from run_cli
 ```
+
+Available tools include: `index_repository`, `search_graph`, `query_graph` (Cypher), `trace_path`,
+`get_code_snippet`, `get_architecture`, `search_code`, `list_projects`, `index_status`,
+`check_index_coverage`, `detect_changes`, `manage_adr`, and more — run `--help` to list them.
+
+## 5. Graph UI (localhost only)
+
+The 3D graph visualization is served over HTTP on **`127.0.0.1:9749`** — loopback only, never a
+non-loopback interface. Build with `--with-ui` to bundle it. (In this fork the UI is started
+on-demand by the CLI rather than by a background daemon; the dedicated `ui` subcommand is tracked
+on the roadmap.)
 
 ## Notes
 
-- Exact subcommand names depend on this project's CLI implementation
-  (e.g., Cobra) — confirm via `--help`.
-- Check `main.go`, `cmd/root.go`, and the root `Makefile`/`README.md` to
-  pin down exact commands if `--help` output is ambiguous.
-
+- Machine-readable output: `cli --json <tool>` prints the raw result envelope; most query tools
+  also accept `--format json` for a stable per-tool JSON shape. This is the intended path for
+  scripting and for driving the tool from an editor/agent.
+- Confirm exact subcommands and flags with `build/c/codebase-memory-mcp --help` and
+  `... cli <tool> --help`.

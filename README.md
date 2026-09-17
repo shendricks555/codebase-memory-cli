@@ -28,6 +28,31 @@ High-quality parsing through [tree-sitter](https://tree-sitter.github.io/tree-si
   <em>Built-in 3D graph visualization — explore your knowledge graph at localhost:9749</em>
 </p>
 
+---
+
+## 🔒 About this fork — CLI-only, no MCP, no network
+
+> **This is a fork of upstream [`codebase-memory-mcp`](https://github.com/DeusData/codebase-memory-mcp) with a different goal than the project above.** If your organization forbids MCP servers or outbound-network developer tools, this fork is for you.
+
+**What it produces:** a single, locally-compiled binary — **`codebase-memory-cli`** — that delivers the same tree-sitter code-graph intelligence (`search_graph`, `trace_path`, `get_architecture`, Cypher `query_graph`, `get_code_snippet`, `index_repository`, …) **entirely through one-shot CLI subcommands** with `--json` output.
+
+**What is removed:**
+- ❌ **No MCP** — no JSON-RPC 2.0 server, no stdio protocol. The binary never speaks MCP.
+- ❌ **No coordination daemon** — no Unix-domain-socket IPC, no cross-session ownership, no background service. Every command runs one-shot and exits. (This also eliminates a whole class of daemon-startup failures.)
+- ❌ **No outbound network** — no update checks, no telemetry. All processing is 100% local, and this is enforced by an auditable security gate.
+
+**What is kept:**
+- ✅ **All the code-graph tools**, exposed as `codebase-memory-cli cli --json <tool> --format json`.
+- ✅ **The 3D graph-viz UI**, started on demand by the CLI and bound to **`127.0.0.1` only** — never a non-loopback interface. It is a local viewer, not remote networking or MCP.
+
+**How you use it with GitHub Copilot:** because this fork is *not* an MCP server, Copilot (VS Code, Visual Studio, JetBrains/IntelliJ, Android Studio) drives it by **invoking the CLI as commands** from its agent/terminal — not through an `.mcp.json` entry. Copilot's native external-tool protocol *is* MCP, so this integration is command-driven by design.
+
+**Upstream-mergeable:** every removal lives behind an additive `CBM_FORK_CLI_ONLY` compile guard; the shared core (`src/foundation`, `src/store`, `src/cypher`, `src/pipeline`, `internal/cbm`) is left untouched so upstream language/pipeline improvements keep flowing in via `git pull`.
+
+> **Status:** this fork is being built out feature-by-feature (see `.claude/planning/active/ROADMAP.md`). Until the `--cli-only` build target lands, build with the standard commands below; the CLI-only target, the `ui` subcommand, and the hardened no-network security gate are tracked on the roadmap. Build-and-run details: [`docs/CLI_QUICKSTART.md`](docs/CLI_QUICKSTART.md) and [`docs/CLI_BUILD_RUN_GUIDE.md`](docs/CLI_BUILD_RUN_GUIDE.md).
+
+---
+
 ## Why codebase-memory-mcp
 
 - **Extreme indexing speed** — Linux kernel (28M LOC, 75K files) in 3 minutes. RAM-first pipeline: LZ4 compression, in-memory SQLite, fused Aho-Corasick pattern matching. Memory released after indexing.

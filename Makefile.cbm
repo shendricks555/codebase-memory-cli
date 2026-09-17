@@ -326,6 +326,18 @@ STORE_SRCS = src/store/store.c
 CYPHER_SRCS = src/cypher/cypher.c
 
 # MCP server module (new)
+#
+# CBM_FORK_CLI_ONLY (fork guard, default-UNDEFINED): when undefined — the state
+# for every default/production/test build below — src/mcp/mcp.c compiles the
+# full upstream MCP surface (JSON-RPC/stdio transport + tool engine), byte-for-
+# byte as upstream. When defined (only via the verify-mcp-engine-split target,
+# never wired into $(PROD_SRCS) or any default target), the JSON-RPC/stdio
+# transport in mcp.c is fenced out with #ifndef guards, leaving the reusable
+# tool engine (TOOLS[], cbm_mcp_handle_tool, handle_*, arg helpers,
+# cbm_mcp_server_new/free) compilable on its own. This is fork removal-prep for
+# a later CLI-only build target; it changes nothing on the default path.
+# index_supervisor.c and compact_out.c are engine-side and stay in MCP_SRCS in
+# both guard states — they are consumed by src/cli/cli.c and src/main.c.
 MCP_SRCS = src/mcp/mcp.c src/mcp/index_supervisor.c src/mcp/compact_out.c
 
 # Shared MCP daemon coordination and local transport
@@ -760,7 +772,7 @@ PP_OBJ_TSAN = $(BUILD_DIR)/tsan_preprocessor.o
 
 # ── Targets ──────────────────────────────────────────────────────
 
-.PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint lint-tidy lint-tidy-diff lint-cppcheck lint-format security
+.PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint lint-tidy lint-tidy-diff lint-cppcheck lint-format security verify-mcp-engine-split cbm-fork-verify verify-project-lock-isolation
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -1079,6 +1091,128 @@ $(BUILD_DIR)/codebase-memory-mcp: $(MAIN_SRC) $(PROD_SRCS) $(EXTRACTION_SRCS) $(
 
 cbm: $(BUILD_DIR)/codebase-memory-mcp
 	@echo "Built: $(BUILD_DIR)/codebase-memory-mcp"
+
+# ── Fork engine/transport split verification (CBM_FORK_CLI_ONLY) ──
+#
+# Verification-only. NOT a prerequisite of any default/production build and NOT
+# in $(PROD_SRCS). Compiles the mcp engine translation unit(s) with the fork
+# guard defined and asserts, via nm, that the tool engine still provides its
+# symbols while the JSON-RPC/stdio transport is fenced out — the E3/E4 gate for
+# the "split MCP tool engine from transport" fork feature. This checks the
+# mcp.c TU in isolation (compile + nm); it is NOT a full daemon-dropping link
+# (that belongs to the later CLI-only build target).
+VERIFY_SPLIT_MCP_OBJ = $(BUILD_DIR)/verify-split-mcp.o
+VERIFY_SPLIT_SUPERVISOR_OBJ = $(BUILD_DIR)/verify-split-index_supervisor.o
+verify-mcp-engine-split: | $(BUILD_DIR)
+	@echo "=== verify-mcp-engine-split: compiling src/mcp/mcp.c with -DCBM_FORK_CLI_ONLY=1 ==="
+	$(CC) $(CFLAGS_PROD) -DCBM_FORK_CLI_ONLY=1 -c -o $(VERIFY_SPLIT_MCP_OBJ) src/mcp/mcp.c
+	@echo "=== compiling src/mcp/index_supervisor.c with -DCBM_FORK_CLI_ONLY=1 (E4) ==="
+	$(CC) $(CFLAGS_PROD) -DCBM_FORK_CLI_ONLY=1 -c -o $(VERIFY_SPLIT_SUPERVISOR_OBJ) src/mcp/index_supervisor.c
+	@echo "=== E3: engine symbols must be PRESENT (defined) in guarded mcp.c ==="
+	@for sym in cbm_mcp_handle_tool cbm_mcp_server_new cbm_mcp_server_free \
+	            cbm_mcp_tool_input_schema cbm_mcp_get_string_arg; do \
+		if nm "$(VERIFY_SPLIT_MCP_OBJ)" | grep -qE " [TtWw] $$sym$$"; then \
+			echo "  ok present: $$sym"; \
+		else \
+			echo "  FAIL: engine symbol missing under CBM_FORK_CLI_ONLY: $$sym"; exit 1; \
+		fi; \
+	done
+	@echo "=== E3: transport symbols must be ABSENT (not defined) in guarded mcp.c ==="
+	@for sym in cbm_mcp_server_run cbm_mcp_read_message cbm_mcp_server_handle cbm_jsonrpc_parse; do \
+		if nm "$(VERIFY_SPLIT_MCP_OBJ)" | grep -qE " [TtWw] $$sym$$"; then \
+			echo "  FAIL: transport symbol still defined under CBM_FORK_CLI_ONLY: $$sym"; exit 1; \
+		else \
+			echo "  ok absent: $$sym"; \
+		fi; \
+	done
+	@echo "=== E4: index_supervisor symbols must be PRESENT under the guard ==="
+	@for sym in cbm_index_supervisor_should_wrap cbm_index_supervisor_capture_build_fingerprint; do \
+		if nm "$(VERIFY_SPLIT_SUPERVISOR_OBJ)" | grep -qE " [TtWw] $$sym$$"; then \
+			echo "  ok present: $$sym"; \
+		else \
+			echo "  FAIL: index_supervisor symbol missing under CBM_FORK_CLI_ONLY: $$sym"; exit 1; \
+		fi; \
+	done
+	@rm -f $(VERIFY_SPLIT_MCP_OBJ) $(VERIFY_SPLIT_SUPERVISOR_OBJ)
+	@echo "verify-mcp-engine-split: PASS"
+
+# ── Fork CLI-only in-process execution verification binary (F3) ──
+#
+# Verification-only. NOT a default/production target and NOT in $(PROD_SRCS);
+# no TEST_SEAMS (built with CFLAGS_PROD, exactly like `cbm`). F3 re-points
+# run_cli's non-worker branch to the in-process engine under CBM_FORK_CLI_ONLY
+# and drops the version_cohort admission barrier while keeping project_lock.
+#
+# The guard-DEFINING CLI-only build target — which also removes src/daemon and
+# src/mcp transport from the link line — is F4. Until then we exercise F3's
+# guarded path by compiling ONLY the fork-owned edges (src/main.c + src/cli/
+# cli.c) with -DCBM_FORK_CLI_ONLY=1 while the daemon/mcp-transport stay linked,
+# merely bypassed by the guarded run_cli. The WHOLE tree cannot take the guard
+# here: src/daemon (application.c, frontend.c) and src/ui (http_server.c) call
+# the JSON-RPC transport (cbm_jsonrpc_parse / cbm_mcp_server_handle /
+# cbm_mcp_read_message) that mcp.c fences out under the guard, so a whole-tree
+# guarded compile would not build. main.c/cli.c reference none of those
+# transport symbols, and the guard changes no struct layout (mcp.h only fences
+# function declarations), so mixing guarded main.o/cli.o with the unguarded
+# rest is ABI-safe. Mirrors F2's verify-mcp-engine-split isolation pattern.
+FORK_VERIFY_BIN = $(BUILD_DIR)/cbm-fork-verify
+FORK_VERIFY_MAIN_OBJ = $(BUILD_DIR)/fork_verify_main.o
+FORK_VERIFY_CLI_OBJ = $(BUILD_DIR)/fork_verify_cli.o
+# Every non-vendored source EXCEPT main.c (MAIN_SRC, added as a guarded object)
+# and cli.c (filtered out of PROD_SRCS, added as a guarded object).
+FORK_VERIFY_REST_SRCS = $(filter-out src/cli/cli.c,$(PROD_SRCS)) \
+    $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC)
+cbm-fork-verify: $(OBJS_VENDORED_PROD) $(PROJECT_HDRS) | $(BUILD_DIR)
+	@echo "=== cbm-fork-verify: compiling src/main.c + src/cli/cli.c with -DCBM_FORK_CLI_ONLY=1 ==="
+	$(CC) $(CFLAGS_PROD) -DCBM_FORK_CLI_ONLY=1 -c -o $(FORK_VERIFY_MAIN_OBJ) src/main.c
+	$(CC) $(CFLAGS_PROD) -DCBM_FORK_CLI_ONLY=1 -c -o $(FORK_VERIFY_CLI_OBJ) src/cli/cli.c
+	@echo "=== linking cbm-fork-verify (daemon still linked, bypassed by guarded run_cli) ==="
+	$(CC) $(CFLAGS_PROD) -o $(FORK_VERIFY_BIN) \
+		$(FORK_VERIFY_MAIN_OBJ) $(FORK_VERIFY_CLI_OBJ) \
+		$(FORK_VERIFY_REST_SRCS) \
+		$(OBJS_VENDORED_PROD) \
+		$(LDFLAGS)
+	@rm -f $(FORK_VERIFY_MAIN_OBJ) $(FORK_VERIFY_CLI_OBJ)
+	@echo "Built: $(FORK_VERIFY_BIN)"
+
+# ── E6/FR-5: project_lock dependency-isolation check ─────────────
+#
+# F4 must keep src/daemon/project_lock.c (pure file locks, no socket) while
+# dropping the rest of src/daemon. This compiles project_lock.c on its own and
+# lists its UNDEFINED externals (nm -U), asserting it pulls in NONE of the
+# daemon-coordination units it must be independent of — version_cohort, service,
+# runtime, application, frontend, host, daemon, bootstrap. It is allowed exactly
+# one src/daemon symbol: cbm_daemon_ipc_private_lock_directory_new (a small,
+# self-contained ipc.c helper it calls to adopt the runtime lock directory);
+# that lone entanglement is recorded as the F4 hand-off note. Everything else it
+# references must be foundation (cbm_lock_*, cbm_private_*) or libc.
+VERIFY_PROJECT_LOCK_OBJ = $(BUILD_DIR)/verify-project-lock.o
+verify-project-lock-isolation: | $(BUILD_DIR)
+	@echo "=== verify-project-lock-isolation: compiling src/daemon/project_lock.c standalone ==="
+	$(CC) $(CFLAGS_PROD) -c -o $(VERIFY_PROJECT_LOCK_OBJ) src/daemon/project_lock.c
+	@echo "=== undefined externals referenced by project_lock.o ==="
+	@nm -u $(VERIFY_PROJECT_LOCK_OBJ) || true
+	@echo "=== asserting NO daemon-coordination units are pulled in ==="
+	@for sym in cbm_version_cohort cbm_daemon_service cbm_daemon_runtime \
+	            cbm_daemon_application cbm_daemon_frontend cbm_daemon_host \
+	            cbm_daemon_bootstrap; do \
+		if nm -u $(VERIFY_PROJECT_LOCK_OBJ) | grep -q "$$sym"; then \
+			echo "  FAIL: project_lock.o references $$sym (must be daemon-independent)"; \
+			rm -f $(VERIFY_PROJECT_LOCK_OBJ); exit 1; \
+		else \
+			echo "  ok absent: $$sym*"; \
+		fi; \
+	done
+	@echo "=== the single permitted src/daemon (ipc.c) entanglement ==="
+	@if nm -u $(VERIFY_PROJECT_LOCK_OBJ) | grep -q cbm_daemon_ipc_private_lock_directory_new; then \
+		echo "  NOTE (F4 hand-off): project_lock.o depends on ipc.c symbol"; \
+		echo "  cbm_daemon_ipc_private_lock_directory_new — F4 must retain that one"; \
+		echo "  self-contained helper (+ the endpoint type) alongside project_lock."; \
+	else \
+		echo "  (no ipc dependency observed)"; \
+	fi
+	@rm -f $(VERIFY_PROJECT_LOCK_OBJ)
+	@echo "verify-project-lock-isolation: PASS"
 
 # ── Build with embedded UI (requires Node.js) ───────────────────
 

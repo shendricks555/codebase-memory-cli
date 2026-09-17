@@ -930,15 +930,25 @@ static int run_cli(int argc, char **argv, cbm_project_lock_manager_t *project_lo
     };
     bool maintenance_binding_failed = false;
     bool maintenance_cancelled = false;
-    if (!index_worker) {
+    /* CBM_FORK_CLI_ONLY: every one-shot `cli <tool>` runs in-process through the
+     * split engine below — no coordination daemon is contacted and no
+     * Unix-domain socket is opened. The default build keeps routing the
+     * non-worker case through the shared daemon (main_local_cli_daemon_execute);
+     * only supervised index workers run in-process there. */
+#ifdef CBM_FORK_CLI_ONLY
+    const bool route_via_daemon = false;
+#else
+    const bool route_via_daemon = !index_worker;
+#endif
+    if (route_via_daemon) {
         result = main_local_cli_daemon_execute(tool_name, args_json, output_flags.quiet_requested);
     } else {
         srv = cbm_mcp_server_new(NULL);
         if (srv) {
-            /* The in-process worker is a standalone instance: it may not
-             * launch MCP-session background tasks. It receives project_locks
-             * from its own process-level coordination setup and therefore
-             * owns the mutation lease while it performs the physical write. */
+            /* A standalone one-shot instance: it may not launch MCP-session
+             * background tasks. It receives project_locks from its own
+             * process-level coordination setup and therefore owns the mutation
+             * lease while it performs the physical write. */
             cbm_mcp_server_set_background_tasks(srv, false);
             if (project_locks) {
                 cbm_mcp_server_set_project_mutation_guard(srv, main_local_cli_mutation_begin,
@@ -948,6 +958,14 @@ static int run_cli(int argc, char **argv, cbm_project_lock_manager_t *project_lo
             }
         }
         maintenance_binding_failed = srv && !maintenance_context;
+#ifdef CBM_FORK_CLI_ONLY
+        /* Fork CLI-only one-shot: no cohort maintenance monitor is started, so
+         * maintenance_context is legitimately NULL by design. That is not a
+         * failure — run the tool directly (no cancellation source exists to
+         * bind). The mutation lease release and cbm_mcp_server_free below still
+         * run on every exit path. */
+        maintenance_binding_failed = false;
+#endif
         if (srv && maintenance_context) {
             main_local_maintenance_server_bind(maintenance_context, srv);
             result = cbm_mcp_handle_tool(srv, tool_name, args_json);
@@ -958,6 +976,11 @@ static int run_cli(int argc, char **argv, cbm_project_lock_manager_t *project_lo
             main_local_maintenance_server_bind(maintenance_context, NULL);
             maintenance_cancelled = main_local_maintenance_was_cancelled(maintenance_context);
         }
+#ifdef CBM_FORK_CLI_ONLY
+        else if (srv) {
+            result = cbm_mcp_handle_tool(srv, tool_name, args_json);
+        }
+#endif
     }
     if (!result) {
         if (maintenance_binding_failed) {
@@ -2753,14 +2776,26 @@ int main(int argc, char **argv) {
         cbm_project_lock_manager_t *project_locks =
             local_endpoint ? cbm_project_lock_manager_new(local_endpoint) : NULL;
         cbm_version_cohort_manager_t *cohort_manager =
+#ifdef CBM_FORK_CLI_ONLY
+            /* Fork CLI-only: the single-process one-shot path drops the
+             * version_cohort admission barrier entirely — a stale/dead cohort
+             * lock can never wedge startup (RESEARCH R-6 class removed). The
+             * project_lock manager above is retained for mutation
+             * serialization. The manager stays NULL and its cleanup helper is a
+             * no-op on NULL. */
+            NULL;
+#else
             local_endpoint ? cbm_version_cohort_manager_new(local_endpoint) : NULL;
+#endif
         cbm_version_cohort_lease_t *cohort_lease = NULL;
         cbm_daemon_ipc_local_transition_t *local_transition = NULL;
         main_local_maintenance_context_t maintenance_context;
         bool maintenance_context_initialized = false;
         cbm_daemon_maintenance_monitor_t *maintenance_monitor = NULL;
+#ifndef CBM_FORK_CLI_ONLY
         cbm_daemon_conflict_t cohort_conflict;
         cbm_version_cohort_status_t cohort_status = CBM_VERSION_COHORT_IO;
+#endif
         main_build_identity_status_t local_identity_status = MAIN_BUILD_IDENTITY_OK;
         int result = CBM_NOT_FOUND;
         int exit_code = EXIT_FAILURE;
@@ -2770,8 +2805,10 @@ int main(int argc, char **argv) {
             coordination_failure = "endpoint";
         } else if (!project_locks) {
             coordination_failure = "project-locks";
+#ifndef CBM_FORK_CLI_ONLY
         } else if (!cohort_manager) {
             coordination_failure = "version-cohort";
+#endif
         } else if (!main_resolve_executable(argv[0], local_executable)) {
             coordination_failure = "executable-path";
         } else if ((local_identity_status = main_build_identity(&local_identity)) !=
@@ -2799,6 +2836,16 @@ int main(int argc, char **argv) {
         }
         cbm_http_server_set_binary_path(local_executable);
 
+#ifdef CBM_FORK_CLI_ONLY
+        /* Fork CLI-only single-process one-shot: no version_cohort admission, no
+         * maintenance monitor, no local transition — those coordinate with the
+         * (removed) daemon and the shared cohort. Run the command directly with
+         * project_lock retained for mutation serialization. maintenance_context
+         * stays uninitialized and is passed as NULL to run_cli; the cleanup
+         * helpers below are all no-ops on the untouched NULL tokens. */
+        result = handle_subcommand(argc, argv, project_locks, NULL);
+        exit_code = result >= 0 ? result : EXIT_FAILURE;
+#else
         cohort_status = cbm_version_cohort_acquire(cohort_manager, &local_identity,
                                                    main_deadline_after(MAIN_STARTUP_TIMEOUT_MS),
                                                    &cohort_lease, &cohort_conflict);
@@ -2886,6 +2933,7 @@ int main(int argc, char **argv) {
 
         result = handle_subcommand(argc, argv, project_locks, &maintenance_context);
         exit_code = result >= 0 ? result : EXIT_FAILURE;
+#endif /* CBM_FORK_CLI_ONLY */
 
     local_cli_cleanup:
         main_local_maintenance_finish(&maintenance_monitor, &maintenance_context,

@@ -18,8 +18,11 @@
 #include <cli/cli.h>
 #include <cli/progress_sink.h>
 #include <daemon/bootstrap.h>
+#include <daemon/ipc.h>
+#include <daemon/project_lock.h>
 #include <daemon/runtime.h>
 #include <daemon/version_cohort.h>
+#include <foundation/compat_fs.h>
 #include <foundation/constants.h>
 #include <foundation/log.h>
 #include <foundation/platform.h>
@@ -14886,6 +14889,187 @@ TEST(cli_update_only_names_an_installer_that_exists_issue1632) {
     PASS();
 }
 
+/* ── F3: daemon-free in-process CLI tool execution ─────────────────
+ *
+ * Under CBM_FORK_CLI_ONLY, run_cli routes every `cli <tool>` through the
+ * F2-split in-process engine (cbm_mcp_server_new + cbm_mcp_handle_tool, with
+ * background tasks off and the project-mutation guard wired) instead of the
+ * daemon. run_cli itself is a static in src/main.c and is not linked into the
+ * test binary, so these tests characterize the exact engine building blocks the
+ * guarded branch composes. The end-to-end guarded behavior (no socket, output
+ * parity vs. the daemon route, no cohort barrier) is verified in Phase N against
+ * the cbm-fork-verify binary. */
+
+/* E3: every registered tool the guarded `cli <tool>` surface can name must
+ * resolve to a handler in-process — never the unknown-tool fallback. Empty args
+ * are fine: reachability, not argument validity, is the contract (a required-arg
+ * error still proves the name resolved). */
+TEST(cli_inprocess_all_tools_resolve_f3) {
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_mcp_server_set_background_tasks(srv, false);
+
+    int tool_count = cbm_mcp_tool_count();
+    ASSERT_EQ(tool_count, 17);
+    for (int i = 0; i < tool_count; i++) {
+        const char *name = cbm_mcp_tool_name(i);
+        ASSERT_NOT_NULL(name);
+        char *resp = cbm_mcp_handle_tool(srv, name, "{}");
+        ASSERT_NOT_NULL(resp);
+        char needle[128];
+        (void)snprintf(needle, sizeof(needle), "unknown tool: %s", name);
+        if (strstr(resp, needle)) {
+            free(resp);
+            cbm_mcp_server_free(srv);
+            FAIL("a registered tool resolved to the unknown-tool fallback in-process");
+        }
+        free(resp);
+    }
+
+    /* An unregistered name still hits the fallback: proves the check above has
+     * teeth rather than always passing. */
+    char *bogus = cbm_mcp_handle_tool(srv, "definitely_not_a_tool", "{}");
+    ASSERT_NOT_NULL(bogus);
+    ASSERT_NOT_NULL(strstr(bogus, "unknown tool"));
+    free(bogus);
+
+    cbm_mcp_server_free(srv);
+    PASS();
+}
+
+/* E2 (engine-level parity anchor): the one server-config difference the guarded
+ * one-shot introduces vs. a plain engine call is background_tasks=false. Assert
+ * that toggle does not perturb a tool's output envelope — byte-for-byte — so the
+ * Phase-N binary-vs-binary diff has a unit-level floor. */
+TEST(cli_inprocess_background_tasks_off_preserves_output_f3) {
+    cbm_mcp_server_t *warm = cbm_mcp_server_new(NULL);
+    cbm_mcp_server_t *oneshot = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(warm);
+    ASSERT_NOT_NULL(oneshot);
+    cbm_mcp_server_set_background_tasks(oneshot, false);
+
+    /* Deterministic, store-independent tool responses (no timestamps, no
+     * project state) so equality reflects only the background-tasks toggle. */
+    const char *cases[][2] = {
+        {"get_architecture", "{\"project\":\"f3-absent-project\"}"},
+        {"list_projects", "{}"},
+        {"index_status", "{\"project\":\"f3-absent-project\"}"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char *warm_out = cbm_mcp_handle_tool(warm, cases[i][0], cases[i][1]);
+        char *oneshot_out = cbm_mcp_handle_tool(oneshot, cases[i][0], cases[i][1]);
+        ASSERT_NOT_NULL(warm_out);
+        ASSERT_NOT_NULL(oneshot_out);
+        ASSERT_NULL(strstr(warm_out, "unknown tool"));
+        if (strcmp(warm_out, oneshot_out) != 0) {
+            free(warm_out);
+            free(oneshot_out);
+            cbm_mcp_server_free(warm);
+            cbm_mcp_server_free(oneshot);
+            FAIL("background_tasks toggle changed a tool's output envelope");
+        }
+        free(warm_out);
+        free(oneshot_out);
+    }
+
+    cbm_mcp_server_free(warm);
+    cbm_mcp_server_free(oneshot);
+    PASS();
+}
+
+/* Mutation-guard probe: replicates main_local_cli_mutation_begin/end semantics
+ * (acquire a project_lock lease on begin, release on end) and, while the lease
+ * is held, checks a second session's manager cannot acquire the same project. */
+typedef struct {
+    cbm_project_lock_manager_t *owner;      /* the run_cli-side manager */
+    cbm_project_lock_manager_t *competitor; /* a concurrent CBM session */
+    cbm_project_lock_lease_t *held;
+    bool begin_called;
+    bool competitor_blocked_while_held;
+    bool end_called;
+} f3_mutation_probe_t;
+
+static bool f3_mutation_probe_begin(void *ctx, const char *project) {
+    f3_mutation_probe_t *probe = ctx;
+    probe->begin_called = true;
+    if (cbm_project_lock_acquire(probe->owner, project, UINT64_MAX, NULL, &probe->held) !=
+            CBM_PRIVATE_FILE_LOCK_OK ||
+        !probe->held) {
+        return false;
+    }
+    cbm_project_lock_lease_t *rival = NULL;
+    probe->competitor_blocked_while_held =
+        cbm_project_lock_try_acquire(probe->competitor, project, &rival) ==
+        CBM_PRIVATE_FILE_LOCK_BUSY;
+    while (rival && cbm_project_lock_lease_release(&rival) != CBM_PRIVATE_FILE_LOCK_OK) {
+        cbm_usleep(1000);
+    }
+    return true;
+}
+
+static void f3_mutation_probe_end(void *ctx, const char *project) {
+    (void)project;
+    f3_mutation_probe_t *probe = ctx;
+    probe->end_called = true;
+    while (probe->held && cbm_project_lock_lease_release(&probe->held) != CBM_PRIVATE_FILE_LOCK_OK) {
+        cbm_usleep(1000);
+    }
+}
+
+/* E4: a mutating tool run through the in-process engine, with the mutation
+ * guard wired to a real project_lock manager exactly as run_cli does, serializes
+ * concurrent writers — no daemon, no cohort. delete_project takes the guard
+ * before any filesystem work, so it drives the contract with only a project name
+ * and no repository. */
+TEST(cli_inprocess_mutation_guard_serializes_via_project_lock_f3) {
+    char runtime_parent[1024];
+    (void)snprintf(runtime_parent, sizeof(runtime_parent), "%s/cbm-f3-mutlock-XXXXXX",
+                   cbm_tmpdir());
+    ASSERT_NOT_NULL(cbm_mkdtemp(runtime_parent));
+
+    cbm_daemon_ipc_endpoint_t *endpoint =
+        cbm_daemon_ipc_endpoint_new("0123456789abcdef", runtime_parent);
+    ASSERT_NOT_NULL(endpoint);
+
+    f3_mutation_probe_t probe;
+    memset(&probe, 0, sizeof(probe));
+    probe.owner = cbm_project_lock_manager_new(endpoint);
+    probe.competitor = cbm_project_lock_manager_new(endpoint);
+    ASSERT_NOT_NULL(probe.owner);
+    ASSERT_NOT_NULL(probe.competitor);
+
+    cbm_mcp_server_t *srv = cbm_mcp_server_new(NULL);
+    ASSERT_NOT_NULL(srv);
+    cbm_mcp_server_set_background_tasks(srv, false);
+    cbm_mcp_server_set_project_mutation_guard(srv, f3_mutation_probe_begin, f3_mutation_probe_end,
+                                              &probe);
+
+    char *resp = cbm_mcp_handle_tool(srv, "delete_project", "{\"project\":\"f3lockproj\"}");
+    ASSERT_NOT_NULL(resp);
+    ASSERT_NULL(strstr(resp, "unknown tool"));
+    free(resp);
+
+    ASSERT(probe.begin_called);
+    ASSERT(probe.competitor_blocked_while_held);
+    ASSERT(probe.end_called);
+
+    /* The lease is released once the tool returns: the competitor now acquires. */
+    cbm_project_lock_lease_t *after = NULL;
+    ASSERT_EQ(cbm_project_lock_try_acquire(probe.competitor, "f3lockproj", &after),
+              CBM_PRIVATE_FILE_LOCK_OK);
+    ASSERT_NOT_NULL(after);
+    while (after && cbm_project_lock_lease_release(&after) != CBM_PRIVATE_FILE_LOCK_OK) {
+        cbm_usleep(1000);
+    }
+
+    cbm_mcp_server_free(srv);
+    ASSERT_EQ(cbm_project_lock_manager_free(&probe.competitor), CBM_PRIVATE_FILE_LOCK_OK);
+    ASSERT_EQ(cbm_project_lock_manager_free(&probe.owner), CBM_PRIVATE_FILE_LOCK_OK);
+    cbm_daemon_ipc_endpoint_free(endpoint);
+    (void)th_rmtree(runtime_parent);
+    PASS();
+}
+
 SUITE(cli) {
     if (!th_secure_runtime_parent_new(g_cli_suite_runtime_parent,
                                       sizeof(g_cli_suite_runtime_parent), "cli-suite")) {
@@ -14897,6 +15081,9 @@ SUITE(cli) {
     cbm_cli_set_activation_runtime_parent_for_test(g_cli_suite_runtime_parent);
 
     RUN_TEST(cli_suite_uses_private_activation_runtime);
+    RUN_TEST(cli_inprocess_all_tools_resolve_f3);
+    RUN_TEST(cli_inprocess_background_tasks_off_preserves_output_f3);
+    RUN_TEST(cli_inprocess_mutation_guard_serializes_via_project_lock_f3);
     RUN_TEST(cli_update_only_names_an_installer_that_exists_issue1632);
 #ifndef _WIN32
     RUN_TEST(cli_hook_deadline_ignores_an_unreadable_value);

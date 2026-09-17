@@ -1,6 +1,6 @@
 ---
 name: roadmap-advance
-description: Resume the roadmap and execute exactly one next stage (spec/plan/implement/verify) for the first incomplete feature. Safe to call repeatedly or from /loop.
+description: Resume the roadmap and advance stages (spec/plan/implement/verify) continuously in order, from the first incomplete stage until a stopping condition. Safe to call repeatedly or from /loop.
 arguments: [status]
 argument-hint: "[status]"
 disable-model-invocation: true
@@ -33,17 +33,23 @@ once consumed, and fold any durable content into `progress.json` notes.
 3. If invoked with `status`: print the reconciled table and **stop** — take
    no further action.
 4. Otherwise: find the first feature with the first incomplete stage, in
-   roadmap order. Execute **exactly that one stage**, dispatching to the
-   matching skill (`/spec`, `/plan`, `/implement`, `/quality-gate`).
+   roadmap order. Execute that stage, dispatching to the matching skill
+   (`/spec`, `/plan`, `/implement`, `/quality-gate`).
 5. Tick the corresponding `ROADMAP.md` cell, delete any consumed
    `HANDOVER.md`, and append one line to `.claude/planning/activity-log.md`
    under today's date heading describing what was done.
-6. Stop. **Never chain multiple stages or features in one invocation.**
+6. **Continue to the next stage.** Re-run steps 2, 4, and 5 for the new first
+   incomplete stage (the next stage of this feature, or the first stage of the
+   next feature), advancing through stages and features in roadmap order.
+   Reconcile from files each time — never trust the cached table. Keep going
+   until you hit one of the stopping conditions below, then stop and surface
+   the state to the user.
 
-## Loop mode
+## Stopping conditions
 
-Safe to drive from `/loop` for unattended progress. Real stopping conditions
-— do not keep looping past these, surface to the user instead:
+These govern both the stage-to-stage chaining within one invocation (step 6)
+and any outer `/loop` driving it. Do not advance past any of these — stop and
+surface the state to the user instead:
 
 - All features show ✅ across every stage.
 - Unresolvable ambiguity in a spec/plan that needs a human decision.
