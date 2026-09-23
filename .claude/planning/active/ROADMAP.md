@@ -21,8 +21,8 @@ internal-cbm`) is left untouched so `git pull` keeps absorbing language/pipeline
 |---|---------|--------|------|------|-----------|--------|
 | 1 | Fork framing & doc correction | `01-fork-framing-docs` | — | — | ✅ | ✅ |
 | 2 | Split MCP tool engine from stdio/JSON-RPC transport | `02-mcp-engine-split` | ✅ | ✅ | ✅ | ✅ |
-| 3 | Daemon-free in-process CLI tool execution | `03-inprocess-cli-exec` | ✅ | ✅ | ✅ | ⬜ |
-| 4 | CLI-only build target & entry dispatch (guarded) | `04-cli-only-build-target` | ⬜ | ⬜ | ⬜ | ⬜ |
+| 3 | Daemon-free in-process CLI tool execution | `03-inprocess-cli-exec` | ✅ | ✅ | ✅ | ✅ |
+| 4 | CLI-only build target & entry dispatch (guarded) | `04-cli-only-build-target` | ✅ | ✅ | ⬜ | ⬜ |
 | 5 | On-demand localhost graph-UI subcommand (daemon-free) | `05-loopback-ui-subcommand` | ⬜ | ⬜ | ⬜ | ⬜ |
 | 6 | No-network hardening & guarantee | `06-no-network-hardening` | ⬜ | ⬜ | ⬜ | ⬜ |
 | 7 | Copilot (no-MCP) CLI integration + build/run quickstart | `07-copilot-cli-and-quickstart` | ⬜ | ⬜ | ⬜ | ⬜ |

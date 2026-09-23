@@ -73,3 +73,57 @@ completed, appended by the `roadmap-advance` skill.
   did: 636+127 green). **Roadmap chain paused at F3 Verify — needs a human
   decision (accept substitute evidence & proceed, or defer to an
   strace/daemon-capable env). F4 is gated on F3 being fully Verified.**
+
+## 2026-09-17
+
+- F3 (`03-inprocess-cli-exec`) **Verify** resolved: human decision (via
+  `/roadmap-advance` under `/loop`) **ACCEPTED the substitute evidence** for the
+  two sandbox-unverifiable evals — E1 (dynamic `strace` no-network proof; strace
+  absent here) and E2 (live daemon-vs-guarded byte-diff; daemon route wedges on
+  the R-6 barrier F3 removes). All non-environmental fork constraints were
+  already independently confirmed by the prior `/quality-gate` (WARN, no FAIL):
+  guard-scoped diff, default build byte-unchanged and `-Werror`-clean across all
+  4 guard/file combos, no networking reachable from the guarded `cli` path,
+  cohort dropped only under guard with project_lock retained, no shared-core
+  edits. Commit-hygiene WARN cause also cleared — the F2/F3 guards are now all
+  committed in `8fc3409a` (working tree clean bar the in-progress
+  `roadmap-advance/SKILL.md`). Updated `progress.json`: phase 99 → complete,
+  TN.4 → passes:true (records the acceptance), E1/E2 → passes:true annotated
+  "SATISFIED BY SUBSTITUTE EVIDENCE" with the dynamic checks retained in
+  `deferredVerification` for a capable env. Ticked ROADMAP F3/Verify ✅. F3 is
+  now fully complete; F4 (`04-cli-only-build-target`) is unblocked.
+- F4 (`04-cli-only-build-target`) **Spec**: wrote `spec.md` for the shippable
+  `codebase-memory-cli` binary. FRs: additive `Makefile.cbm cbm-cli` target
+  (`CBM_FORK_CLI_ONLY`, PROD_SRCS minus daemon runtime/frontend
+  `daemon/version_cohort/service/runtime/application/frontend/host` + the MCP
+  stdio frontend, keep engine/index_supervisor/project_lock +
+  store/cypher/pipeline/internal-cbm/ui); guard-scoped `main.c` dispatch so
+  DAEMON/DAEMON_CTL/MCP_CLIENT branches compile out and the default/unknown
+  fall-through prints help instead of the stdio MCP server (never reads stdin
+  JSON-RPC); `scripts/build.sh --cli-only`; TEST_SEAMS stays opt-in; default
+  `make cbm` byte-unchanged. Evals E1–E9. **Two spec-time findings for /plan**
+  (filesystem-verified, graph tools CONNECTION_CLOSED this session): (1) the
+  argv classifier `cbm_daemon_process_role` (`bootstrap.c`), `project_lock.c`,
+  and the lone helper `cbm_daemon_ipc_private_lock_directory_new` all live in
+  `DAEMON_SRCS`, and only `ipc.c` carries the 5 daemon sockets — so "minus
+  DAEMON_SRCS" can't be literal; plan must retain those three while excluding
+  ipc.c's socket cluster (guard/split/dead-strip — plan's call). (2) The kept
+  `src/ui` loopback listener is the sole permitted socket, dormant until F5, so
+  E2's nm-assertion scopes to daemon/IPC symbols only. Ticked ROADMAP F4/Spec ✅.
+- F4 (`04-cli-only-build-target`) **Plan**: wrote `plan.md` + `progress.json`.
+  Phase 0 (build): additive `cbm-cli` target + `scripts/build.sh --cli-only` +
+  `verify-cli-only-link` nm-assertion; TEST_SEAMS excluded from release recipe.
+  Phase 4 (TDD, guard-scoped): T4.1 entry-dispatch tests first (bare/unknown →
+  help + non-zero + no stdin JSON-RPC; daemon roles inert; 17 tools +
+  project_lock on the shipped binary), T4.2 guard `main.c` DAEMON/DAEMON_CTL/
+  MCP_CLIENT branches out and route default → help, **T4.3 link-isolation
+  decision** (prefer link-level `--gc-sections` with ZERO `src/daemon` edits;
+  fall back to guard-scoped `#ifndef` removal in ipc.c/bootstrap.c). Phase 99:
+  E7 byte-unchanged default + suite + `/quality-gate`. Eval coverage E1–E9 mapped
+  to phases; NFR table covers no-MCP/no-daemon delivery, mergeability, TEST_SEAMS,
+  byte-stable default. **Plan-time finding** (graph tools CONNECTION_CLOSED,
+  grep-verified): correcting the F3 hand-off — `bootstrap.c` (argv-classifier
+  home) references `ipc.c` coordination fns (`endpoint_new`/
+  `lifetime_reservation_probe`/`startup_lock_*`), so the classifier TU is not
+  socket-isolated even though the classifier body is pure argv; only `ipc.c`
+  carries the 5 daemon sockets. Ticked ROADMAP F4/Plan ✅.

@@ -772,7 +772,7 @@ PP_OBJ_TSAN = $(BUILD_DIR)/tsan_preprocessor.o
 
 # ── Targets ──────────────────────────────────────────────────────
 
-.PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint lint-tidy lint-tidy-diff lint-cppcheck lint-format security verify-mcp-engine-split cbm-fork-verify verify-project-lock-isolation
+.PHONY: test test-par test-repro test-foundation test-tsan test-daemon-smoke cbm cbm-with-ui frontend embed clean-c lint lint-tidy lint-tidy-diff lint-cppcheck lint-format security verify-mcp-engine-split cbm-fork-verify verify-project-lock-isolation compile-commands
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -1111,7 +1111,7 @@ verify-mcp-engine-split: | $(BUILD_DIR)
 	@echo "=== E3: engine symbols must be PRESENT (defined) in guarded mcp.c ==="
 	@for sym in cbm_mcp_handle_tool cbm_mcp_server_new cbm_mcp_server_free \
 	            cbm_mcp_tool_input_schema cbm_mcp_get_string_arg; do \
-		if nm "$(VERIFY_SPLIT_MCP_OBJ)" | grep -qE " [TtWw] $$sym$$"; then \
+		if nm "$(VERIFY_SPLIT_MCP_OBJ)" | grep -qE " [TtWw] _?$$sym$$"; then \
 			echo "  ok present: $$sym"; \
 		else \
 			echo "  FAIL: engine symbol missing under CBM_FORK_CLI_ONLY: $$sym"; exit 1; \
@@ -1119,7 +1119,7 @@ verify-mcp-engine-split: | $(BUILD_DIR)
 	done
 	@echo "=== E3: transport symbols must be ABSENT (not defined) in guarded mcp.c ==="
 	@for sym in cbm_mcp_server_run cbm_mcp_read_message cbm_mcp_server_handle cbm_jsonrpc_parse; do \
-		if nm "$(VERIFY_SPLIT_MCP_OBJ)" | grep -qE " [TtWw] $$sym$$"; then \
+		if nm "$(VERIFY_SPLIT_MCP_OBJ)" | grep -qE " [TtWw] _?$$sym$$"; then \
 			echo "  FAIL: transport symbol still defined under CBM_FORK_CLI_ONLY: $$sym"; exit 1; \
 		else \
 			echo "  ok absent: $$sym"; \
@@ -1127,7 +1127,7 @@ verify-mcp-engine-split: | $(BUILD_DIR)
 	done
 	@echo "=== E4: index_supervisor symbols must be PRESENT under the guard ==="
 	@for sym in cbm_index_supervisor_should_wrap cbm_index_supervisor_capture_build_fingerprint; do \
-		if nm "$(VERIFY_SPLIT_SUPERVISOR_OBJ)" | grep -qE " [TtWw] $$sym$$"; then \
+		if nm "$(VERIFY_SPLIT_SUPERVISOR_OBJ)" | grep -qE " [TtWw] _?$$sym$$"; then \
 			echo "  ok present: $$sym"; \
 		else \
 			echo "  FAIL: index_supervisor symbol missing under CBM_FORK_CLI_ONLY: $$sym"; exit 1; \
@@ -1164,8 +1164,8 @@ FORK_VERIFY_REST_SRCS = $(filter-out src/cli/cli.c,$(PROD_SRCS)) \
     $(EXTRACTION_SRCS) $(AC_LZ4_SRCS) $(ZSTD_SRCS) $(SQLITE_WRITER_SRC)
 cbm-fork-verify: $(OBJS_VENDORED_PROD) $(PROJECT_HDRS) | $(BUILD_DIR)
 	@echo "=== cbm-fork-verify: compiling src/main.c + src/cli/cli.c with -DCBM_FORK_CLI_ONLY=1 ==="
-	$(CC) $(CFLAGS_PROD) -DCBM_FORK_CLI_ONLY=1 -c -o $(FORK_VERIFY_MAIN_OBJ) src/main.c
-	$(CC) $(CFLAGS_PROD) -DCBM_FORK_CLI_ONLY=1 -c -o $(FORK_VERIFY_CLI_OBJ) src/cli/cli.c
+	$(CC) $(CFLAGS_PROD) -Wno-unused-function -Wno-unused-variable -DCBM_FORK_CLI_ONLY=1 -c -o $(FORK_VERIFY_MAIN_OBJ) src/main.c
+	$(CC) $(CFLAGS_PROD) -Wno-unused-function -Wno-unused-variable -DCBM_FORK_CLI_ONLY=1 -c -o $(FORK_VERIFY_CLI_OBJ) src/cli/cli.c
 	@echo "=== linking cbm-fork-verify (daemon still linked, bypassed by guarded run_cli) ==="
 	$(CC) $(CFLAGS_PROD) -o $(FORK_VERIFY_BIN) \
 		$(FORK_VERIFY_MAIN_OBJ) $(FORK_VERIFY_CLI_OBJ) \
@@ -1174,6 +1174,9 @@ cbm-fork-verify: $(OBJS_VENDORED_PROD) $(PROJECT_HDRS) | $(BUILD_DIR)
 		$(LDFLAGS)
 	@rm -f $(FORK_VERIFY_MAIN_OBJ) $(FORK_VERIFY_CLI_OBJ)
 	@echo "Built: $(FORK_VERIFY_BIN)"
+
+# ── Fork F4: CLI-only binary (cbm-cli, verify-cli-only-link) — additive ──
+include cli-only.mk
 
 # ── E6/FR-5: project_lock dependency-isolation check ─────────────
 #
@@ -1324,6 +1327,17 @@ lint: lint-tidy lint-cppcheck lint-format lint-no-suppress
 # CI linters (no clang-tidy — platform-dependent, enforced locally via pre-commit)
 lint-ci: lint-cppcheck lint-format lint-no-suppress
 	@echo "=== CI linters passed ==="
+
+# ── Compilation database for IDE / clangd tooling ────────────────────────────
+# Regenerate compile_commands.json so C/C++ IDEs (CLion, VS Code + clangd, etc.)
+# get a full code model with cross-file navigation and refactoring. This project
+# builds via Makefile.cbm rather than CMake, so the database is derived from a
+# `make -n -B` dry run by scripts/gen_compile_commands.sh. The file is a
+# generated artifact (gitignored) — regenerate it after the Makefile's compile
+# flags or source set change. See docs/IDE_SETUP.md.
+compile-commands:
+	@echo "=== regenerating compile_commands.json ==="
+	@scripts/gen_compile_commands.sh
 
 # ── Local memory-diagnostic lanes (not PR-CI gates by decision: the diag
 #    build doubles a runner's bill for a marginal delta, and a gating analyzer

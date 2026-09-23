@@ -3,7 +3,6 @@ name: roadmap-advance
 description: Resume the roadmap and advance stages (spec/plan/implement/verify) continuously in order, from the first incomplete stage until a stopping condition. Safe to call repeatedly or from /loop.
 arguments: [status]
 argument-hint: "[status]"
-disable-model-invocation: true
 ---
 
 # /roadmap-advance

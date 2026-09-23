@@ -2811,9 +2811,11 @@ int main(int argc, char **argv) {
 #endif
         } else if (!main_resolve_executable(argv[0], local_executable)) {
             coordination_failure = "executable-path";
+#ifndef CBM_FORK_CLI_ONLY
         } else if ((local_identity_status = main_build_identity(&local_identity)) !=
                    MAIN_BUILD_IDENTITY_OK) {
             coordination_failure = main_build_identity_status_name(local_identity_status);
+#endif
         }
         if (coordination_failure) {
             /* Name the rule that refused, not just the stage that failed.
@@ -2936,6 +2938,19 @@ int main(int argc, char **argv) {
 #endif /* CBM_FORK_CLI_ONLY */
 
     local_cli_cleanup:
+#ifdef CBM_FORK_CLI_ONLY
+        /* No monitor, transition or cohort tokens exist on this path. */
+        (void)maintenance_monitor;
+        (void)maintenance_context;
+        (void)maintenance_context_initialized;
+        (void)local_transition;
+        (void)cohort_lease;
+        (void)cohort_manager;
+        (void)feedback;
+        (void)local_identity;
+        (void)local_identity_status;
+        cleanup_ok = main_project_lock_manager_close(&project_locks) && cleanup_ok;
+#else
         main_local_maintenance_finish(&maintenance_monitor, &maintenance_context,
                                       maintenance_context_initialized, "CLI command");
         cleanup_ok = main_project_lock_manager_close(&project_locks) && cleanup_ok;
@@ -2944,6 +2959,7 @@ int main(int argc, char **argv) {
          * barrier must not prove every old participant gone while this process
          * still owns a local transition or project mutation lease. */
         cleanup_ok = main_version_cohort_close(&cohort_lease, &cohort_manager) && cleanup_ok;
+#endif
         cbm_daemon_ipc_endpoint_free(local_endpoint);
         if (!cleanup_ok) {
             main_report_client_failure(role, "CLI coordination cleanup failed");
@@ -2952,6 +2968,15 @@ int main(int argc, char **argv) {
         return exit_code;
     }
 
+#ifdef CBM_FORK_CLI_ONLY
+    /* Unreachable (non-CLI roles rejected above); defensive usage fall-through. */
+    (void)process_initial_ppid;
+    (void)tool_profile;
+    (void)hook_event;
+    (void)hook_dialect;
+    print_help();
+    return 2;
+#else
     char executable_path[MAIN_PATH_CAP];
     cbm_daemon_build_identity_t identity;
     if (!main_resolve_executable(argv[0], executable_path)) {
@@ -3301,4 +3326,5 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
     return result < 0 ? EXIT_FAILURE : result;
+#endif /* CBM_FORK_CLI_ONLY */
 }

@@ -21,6 +21,11 @@ cli-*/
 .vscode/
 *.swp
 *.swo
+# Generated compilation database for IDE / clangd code models. Derived from the
+# Makefile by `make -f Makefile.cbm compile-commands`; regenerate locally rather
+# than commit it (avoids churn/merge conflicts and per-checkout path skew).
+# See docs/IDE_SETUP.md.
+compile_commands.json
 
 # OS
 .DS_Store

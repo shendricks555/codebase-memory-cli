@@ -19,7 +19,7 @@ cd "$ROOT"
 
 usage() {
     cat <<'EOF'
-Usage: scripts/build.sh [--with-ui] [--version V] [--arch ARCH] [VAR=VAL ...]
+Usage: scripts/build.sh [--with-ui | --cli-only] [--version V] [--arch ARCH] [VAR=VAL ...]
 
 The canonical production-build entry: identical in local CI, PR CI, dry run
 and release. Always a CLEAN build of BUILD_DIR (build/c by default) — the
@@ -30,6 +30,9 @@ construction (CCACHE_COMPILERCHECK=content).
 
 Options:
   --with-ui       Build the web UI as a content-addressed sidecar (needs node).
+  --cli-only      Fork default: build codebase-memory-cli (make cbm-cli) with
+                  CBM_FORK_CLI_ONLY: no daemon runtime, no MCP stdio server,
+                  never compiled with test seams.
   --version V     Stamp the version string (release venue passes the tag).
   --arch ARCH     Force target arch (arm64 | x86_64), e.g. under Rosetta.
   -h, --help      This text.
@@ -79,6 +82,7 @@ source "$ROOT/scripts/path-safety.sh"
 # containerized legs can build in their own directory instead of deleting and
 # clobbering the host's native build/c artifacts.
 WITH_UI=false
+CLI_ONLY=false
 VERSION=""
 BUILD_DIR="build/c"
 EXTRA_MAKE_ARGS=()
@@ -93,6 +97,14 @@ for arg in "$@"; do
     case "$arg" in
         --with-ui)
             WITH_UI=true
+            ;;
+        --cli-only)
+            CLI_ONLY=true
+            ;;
+        TEST_SEAMS=*)
+            # E8: release builds never carry test seams.
+            echo "build.sh: TEST_SEAMS is not allowed in release builds." >&2
+            exit 2
             ;;
         --version)
             prev_arg="$arg"
@@ -138,8 +150,13 @@ if [[ -n "$VERSION" ]]; then
     CFLAGS_EXTRA="-DCBM_VERSION=\"\\\"$CLEAN_VERSION\\\"\""
 fi
 
+if $WITH_UI && $CLI_ONLY; then
+    echo "build.sh: --with-ui and --cli-only are mutually exclusive." >&2
+    exit 2
+fi
+
 print_env "build.sh"
-echo "  ui=$WITH_UI version=${VERSION:-dev}"
+echo "  ui=$WITH_UI cli_only=$CLI_ONLY version=${VERSION:-dev}"
 
 # Verify compiler supports target arch
 verify_compiler "$CC"
@@ -148,7 +165,12 @@ verify_compiler "$CC"
 cbm_remove_build_dir "$ROOT" "$BUILD_DIR"
 
 # Step 2: Build (Makefile applies $ARCHFLAGS for the target arch on macOS)
-if $WITH_UI; then
+if $CLI_ONLY; then
+    make -j"$NPROC" -f Makefile.cbm cbm-cli \
+        CFLAGS_EXTRA="$CFLAGS_EXTRA" "${EXTRA_MAKE_ARGS[@]+"${EXTRA_MAKE_ARGS[@]}"}"
+    echo "=== Build complete: ${BUILD_DIR}/codebase-memory-cli ==="
+    exit 0
+elif $WITH_UI; then
     make -j"$NPROC" -f Makefile.cbm cbm-with-ui \
         CFLAGS_EXTRA="$CFLAGS_EXTRA" "${EXTRA_MAKE_ARGS[@]+"${EXTRA_MAKE_ARGS[@]}"}"
 else
