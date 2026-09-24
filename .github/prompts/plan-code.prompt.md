@@ -1,5 +1,5 @@
 ---
-name: plan
+name: plan-code
 description: "Break down an approved specification into atomic, verifiable C implementation tasks."
 argument-hint: "Specification or feature to plan"
 ---
