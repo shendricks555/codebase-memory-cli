@@ -13,8 +13,14 @@ BIN="${CBM_TEST_BINARY:-${ROOT}/build/c/codebase-memory-cli}"
 [[ -x "$BIN" ]] || { echo "missing binary: $BIN" >&2; exit 2; }
 command -v python3 >/dev/null || { echo "python3 required" >&2; exit 2; }
 
-WORK="$(mktemp -d "${ROOT}/build/c/cli-only-smoke.XXXXXX")"
-trap 'chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+mkdir -p "${ROOT}/build/c"
+WORK="$(mktemp -d "${ROOT}/build/c/cli-only-smoke.XXXXXX")" || { echo "mktemp failed" >&2; exit 2; }
+cleanup() {
+  local pids; pids="$(jobs -p)"
+  [[ -n $pids ]] && kill -9 $pids 2>/dev/null
+  chmod -R u+w "$WORK" 2>/dev/null; rm -rf "$WORK"
+}
+trap cleanup EXIT
 export HOME="$WORK/home" TMPDIR="$WORK/tmp" CBM_CACHE_DIR="$WORK/cache"
 export XDG_CONFIG_HOME="$HOME/.config" XDG_CACHE_HOME="$HOME/.cache" LC_ALL=C
 mkdir -p "$HOME" "$TMPDIR" "$CBM_CACHE_DIR"
@@ -40,7 +46,12 @@ run_bounded() {
   else
     "$BIN" "$@" </dev/null >"$out" 2>"$err" &
   fi
-  local pid=$! waited=0
+  bounded_wait "$!" "$secs"
+}
+
+# bounded_wait PID SECS -> sets RC (124 and SIGKILL on timeout).
+bounded_wait() {
+  local pid=$1 secs=$2 waited=0
   while kill -0 "$pid" 2>/dev/null && ((waited < secs * 10)); do sleep 0.1; waited=$((waited + 1)); done
   if kill -0 "$pid" 2>/dev/null; then
     kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; RC=124
@@ -141,7 +152,7 @@ PY
 for i in 1 2 3; do
   "$BIN" cli --json index_repository "{\"repo_path\":\"$REPO\"}" </dev/null >"$WORK/a" 2>/dev/null & a=$!
   "$BIN" cli --json index_repository "{\"repo_path\":\"$REPO\"}" </dev/null >"$WORK/b" 2>/dev/null & b=$!
-  wait "$a"; ra=$?; wait "$b"; rb=$?
+  bounded_wait "$a" 120; ra=$RC; bounded_wait "$b" 120; rb=$RC
   if ((ra == 0 && rb == 0)) && is_json "$WORK/a" && is_json "$WORK/b" && integrity; then
     ok "concurrent index #$i: both rc 0, DB integrity ok"
   else fail "concurrent index #$i: rc=$ra/$rb or integrity failed"; fi
