@@ -17,6 +17,12 @@ The fork must remain easy to merge from upstream. Prefer small, isolated, additi
 
 ---
 
+## Agent workspace boundary
+
+- Agents work only inside this repository directory.
+- Scratch files, probe repos, logs and test temp roots go under `build/c/` (git-ignored), never `/tmp`, `/private/tmp`, `$TMPDIR` or elsewhere on the machine.
+- Exception: the binary under test may use its own lock directory (`/private/tmp/cbm-daemon-<uid>` on macOS). Agents must not create, edit or delete anything there themselves.
+
 ## Non-negotiable constraints
 
 ### 1. C only

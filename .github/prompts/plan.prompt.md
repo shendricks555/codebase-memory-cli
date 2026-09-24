@@ -35,6 +35,7 @@ For each [TASK-X], you must define:
 
 <output_location>
 Save the result as `planning/features/NN-<slug>/plan.md` in the repository, in the same folder as that feature's `summary.md`. Never save it only to a session or scratch directory. If the target feature folder is ambiguous, ask before writing.
+If the repository path cannot be written (e.g. plan mode blocks writes outside the session folder), STOP and tell the user before writing anywhere else. Do not save to the session directory as a substitute. Once writes are permitted, the first action must be writing `plan.md` to the feature folder and confirming the path to the user.
 </output_location>
 
 <tdd_directive>

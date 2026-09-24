@@ -100,3 +100,9 @@ verify-cli-only-link: cbm-cli
 	if [ $$fail -ne 0 ]; then exit 1; fi
 	@echo "verify-cli-only-link: PASS"
 
+
+# ── Milestone 01: smoke test for the shipped CLI (test-only, additive) ───────
+.PHONY: test-cli-only
+
+test-cli-only: cbm-cli
+	CBM_TEST_BINARY="$(CURDIR)/$(CLI_ONLY_BIN)" bash tests/test_cli_only_smoke.sh
