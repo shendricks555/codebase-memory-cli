@@ -1,67 +1,364 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Mission
 
-## Fork purpose
+This repository is a fork of upstream `codebase-memory-mcp`.
 
-This is a fork of upstream `codebase-memory-mcp`. The goal of this fork is to produce a **separate binary** that has all MCP protocol handling and the coordination daemon removed, so the resulting tool satisfies "no MCP servers" AI policies at companies that ship this internally. The local, localhost-only graph-viz UI (`src/ui/`) is explicitly **kept** — it is not remote networking or MCP, and it's how people see the code graph. Two constraints drive every change here:
+The fork produces a **separate standalone C11 binary** with:
 
-1. **Keep upstream mergeable.** We must be able to run `git pull` from upstream on an ongoing basis to absorb language/grammar/pipeline improvements. Prefer changes that are additive or isolated (new build target, compile-time guards, deletion at the edges) over changes that rewrite shared core files (`src/foundation`, `src/store`, `src/cypher`, `src/pipeline`, `internal/cbm`). Touching a file that upstream actively changes increases future merge-conflict risk — minimize the diff footprint in those areas.
-2. **No MCP, no daemon; localhost-only UI is allowed.** The shipped binary must not speak MCP JSON-RPC and must not run the multi-client coordination daemon (Unix-domain socket IPC, cross-session ownership). That means `src/mcp/` and `src/daemon/` are the removal targets — not `src/cli/` (local one-shot commands, already network-free upstream, see below) and not `src/ui/`. `src/ui/` may run its graph-viz HTTP server bound to `localhost` only, started on-demand by the CLI itself (not by a shared daemon, since the daemon is removed) and never listening on a non-loopback interface or requiring inbound connections from other hosts.
+- **No MCP protocol/server**
+- **No coordination daemon**
+- **No Unix-domain-socket IPC**
+- **No cross-session/shared daemon ownership**
+- **No non-loopback network listener**
+- The existing **localhost-only graph UI is kept**
 
-When in doubt about whether a change belongs in this fork vs. upstream: behavior changes that only strip MCP/daemon and adapt the UI to run without the daemon belong here; general indexing/parsing/language improvements should go upstream and be pulled in.
+The fork must remain easy to merge from upstream. Prefer small, isolated, additive changes over rewrites of shared upstream code.
 
-## Commands
+---
 
-```bash
-scripts/build.sh              # standard release build -> build/c/codebase-memory-mcp
-scripts/build.sh --with-ui    # bundles the graph-viz UI (src/ui/) into the fork binary — kept in this fork, unlike MCP/daemon
-scripts/test.sh               # build with ASan+UBSan and run the full C test suite
-scripts/lint.sh               # clang-tidy, cppcheck, clang-format — must pass before committing
-make -f Makefile.cbm test           # build + run all tests (ASan + UBSan)
-make -f Makefile.cbm test-foundation # foundation tests only (fast)
-make -f Makefile.cbm cbm            # production binary
-make -f Makefile.cbm security       # 8-layer security audit (static allow-list, string scan, network-egress test, fuzz, etc.)
+## Non-negotiable constraints
+
+### 1. C only
+
+- This repository is C11.
+- **Do not add Go code.**
+- Do not introduce a new runtime or external service.
+- Dependencies are vendored and must remain buildable without network access.
+
+### 2. No MCP
+
+The fork's shipped binary must not:
+
+- implement MCP;
+- speak JSON-RPC for MCP;
+- expose MCP tool handlers;
+- start an MCP server;
+- retain a runtime dependency on `src/mcp/`.
+
+`src/mcp/` is a **removal target**.
+
+Equivalent functionality belongs behind direct local CLI commands where appropriate.
+
+### 3. No daemon
+
+The fork's shipped binary must not:
+
+- start the upstream coordination daemon;
+- connect to or create its Unix-domain socket;
+- perform cross-session daemon coordination;
+- depend on daemon-owned watcher/indexing/UI lifecycle;
+- retain a runtime dependency on `src/daemon/`.
+
+`src/daemon/` is a **removal target**.
+
+Do not remove `src/cli/` merely because upstream daemon workflows interact with it. The CLI is intentionally part of this fork.
+
+### 4. Localhost-only UI is allowed
+
+`src/ui/` is intentionally retained.
+
+The UI may start a local HTTP server for graph visualization, but:
+
+- it must bind to loopback only (`127.0.0.1` / equivalent loopback binding);
+- it must never bind `0.0.0.0`, `::`, or another non-loopback interface;
+- it must not require the coordination daemon;
+- it should be started/stopped directly by the local CLI/session;
+- it must not create a remotely accessible service.
+
+The expected default UI port is `9749` unless the existing implementation/configuration says otherwise.
+
+---
+
+## Fork-vs-upstream rule
+
+Before changing code, decide which category the change belongs to.
+
+### Fork-specific
+
+Keep the change in this fork when it exists only because we removed MCP/daemon support, for example:
+
+- removing MCP entry points;
+- removing daemon dependencies;
+- adapting CLI lifecycle to replace daemon-owned behavior;
+- making the UI start directly from the CLI;
+- enforcing loopback-only UI binding;
+- fork-specific build targets/guards;
+- removing code that is unreachable after MCP/daemon removal.
+
+### Upstream-worthy
+
+General functionality belongs upstream, not in the fork:
+
+- language support;
+- tree-sitter extraction;
+- indexing improvements;
+- graph/storage improvements;
+- Cypher behavior;
+- pipeline correctness;
+- general bug fixes;
+- parser/grammar improvements;
+- performance improvements unrelated to MCP/daemon removal.
+
+When uncertain, prefer the smallest fork-specific adaptation and avoid changing shared core behavior.
+
+---
+
+## Mergeability is a design constraint
+
+We regularly pull changes from upstream.
+
+Minimize conflicts with upstream by:
+
+- preferring changes at subsystem boundaries;
+- adding isolated files/targets where possible;
+- using compile-time guards only when they materially reduce duplication;
+- deleting MCP/daemon dependencies at the edges rather than rewriting shared implementations;
+- avoiding formatting-only changes;
+- avoiding unrelated refactors;
+- preserving upstream naming, structure, and control flow when practical.
+
+Shared areas that should receive extra scrutiny before modification:
+
+```text
+src/foundation/
+src/store/
+src/cypher/
+src/pipeline/
+internal/cbm/
 ```
 
-Run a single test file/case: the suite is plain C test binaries under `tests/`; grep `tests/*.sh` and `scripts/test.sh` for how individual `test_*.c` files are selected/filtered before adding a new invocation pattern — don't assume a `-run` style flag exists without checking.
+These are core upstream code. Do not refactor them merely to make the fork cleaner.
 
-`git config core.hooksPath scripts/hooks` activates the pre-commit security checks (run once after cloning).
+If a change can be implemented either by modifying shared core code or by adapting the fork-specific CLI/build boundary, prefer the latter unless there is a concrete correctness reason not to.
+
+---
 
 ## Architecture
 
-Pure C11 codebase (rewritten from Go at upstream v0.5.0 — **do not submit Go code**, only C). No language runtime, no external services; everything (tree-sitter grammars, SQLite, JSON) is vendored and compiled into the binary.
-
-```
+```text
 src/
-  foundation/   arena allocator, hash table, string utils, platform compat — core, shared, low-conflict-risk to touch
-  store/        SQLite graph storage (WAL mode, FTS5)
-  cypher/       Cypher query -> SQL translation
-  pipeline/     multi-pass indexing pipeline (pass_*.c: definitions, calls, usages, HTTP-route extraction, infra-scan)
-  discover/     file discovery with gitignore support
+  foundation/   arena allocator, hash table, string/platform utilities
+  store/        SQLite graph storage (WAL, FTS5)
+  cypher/       Cypher -> SQL translation
+  pipeline/     multi-pass indexing pipeline
+  discover/     file discovery + gitignore support
   watcher/      git-based background auto-sync
-  cli/          local one-shot CLI subcommands (install/update/uninstall/config) — no daemon, no persistent listener
-  mcp/          MCP server: JSON-RPC 2.0 over stdio, tool handlers  <- REMOVAL TARGET for this fork
-  daemon/       shared coordination daemon: Unix-domain socket IPC, session registration, watcher/indexing ownership  <- REMOVAL TARGET
-  ui/           graph-visualization HTTP server (first-party httpd, served at localhost:9749)  <- KEPT: localhost-only, started on-demand by cli, not by the (removed) daemon
-internal/cbm/   language registry, tree-sitter AST extraction, vendored grammars (162 languages)
-vendored/       sqlite3, yyjson, mimalloc, xxhash, tre, nomic — all vendored, no network fetch at build/run time
-graph-ui/       React/Three.js frontend for the graph UI — kept, bundled via scripts/build.sh --with-ui
+  cli/          local one-shot CLI commands; retained in this fork
+  mcp/          MCP JSON-RPC server                         [REMOVE]
+  daemon/       shared coordination daemon + Unix IPC      [REMOVE]
+  ui/           localhost graph-visualization HTTP server   [KEEP]
+
+internal/cbm/   language registry, AST extraction, vendored grammars
+vendored/       sqlite3, yyjson, mimalloc, xxhash, tre, nomic
+graph-ui/       React/Three.js graph UI; bundled with --with-ui
 ```
 
-Key upstream behaviors to know when deciding what to strip:
+### Important upstream behavior
 
-- **Coordination daemon** (`src/daemon/`): one per-account daemon is shared across all MCP-speaking clients (Claude Code, Codex, OpenCode, etc.). It owns watchers, shared indexing jobs, and the optional UI, coordinated via a Unix-domain socket (`src/daemon/ipc.c`) plus a crash-safe OS admission barrier so all active CBM processes agree on version/build/cache-root. `cli` mode is the one path upstream already keeps out of daemon/socket coordination — it runs one command locally and only touches the OS admission barrier and per-project graph-mutation locks. That makes `src/cli/` + `src/pipeline/` + `src/store/` + `internal/cbm/` the natural core to build this fork's binary from.
-- **MCP server** (`src/mcp/`): JSON-RPC 2.0 over stdio exposing indexing/query tools (search, trace, architecture, Cypher queries, ADR management, etc.) to MCP clients. This fork's binary should expose equivalent functionality only via direct CLI subcommands (see `src/cli/cli.c`), not JSON-RPC.
-- **UI** (`src/ui/`): serves the bundled graph-viz frontend over HTTP on `localhost:9749`. Upstream has the daemon own it so concurrent sessions don't start duplicate servers; since this fork removes the daemon, the fork's `cli` must instead start/stop the UI server itself for a single local session (e.g. a `codebase-memory-mcp ui` or `--serve-ui` subcommand) and must refuse to bind anything but a loopback address.
-- Infra-language support (Dockerfile/K8s/Kustomize) follows an "infra-pass" pattern in `src/pipeline/pass_infrascan.c` + `internal/cbm/extract_k8s.c` reusing the tree-sitter YAML grammar rather than adding new grammars — relevant only if extending indexing, not to the MCP-removal work.
+The upstream daemon normally coordinates:
 
-## Language/extraction workflow (upstream feature work, not fork-specific)
+- watchers;
+- shared indexing;
+- concurrent MCP clients;
+- optional UI lifecycle;
+- Unix-domain-socket communication;
+- process/version/cache-root admission.
 
-1. Grammar/AST node config lives in `internal/cbm/lang_specs.c`; extraction in `internal/cbm/extract_*.c`.
-2. Pipeline passes (call resolution, usage tracking, HTTP-route linking) live in `src/pipeline/`.
-3. Regression tests: `tests/test_extraction.c`, `tests/test_pipeline.c`; legacy parity checks in `internal/cbm/regression_test.go` (being migrated off Go).
+That machinery is intentionally absent from this fork.
+
+The upstream CLI path is already the natural local execution boundary: it performs one command locally and does not depend on daemon/socket coordination.
+
+Therefore, the fork should generally preserve:
+
+```text
+cli -> pipeline -> store/foundation/internal-cbm
+```
+
+while removing:
+
+```text
+MCP -> daemon
+MCP -> daemon IPC
+daemon -> UI lifecycle
+daemon -> shared watcher/index ownership
+```
+
+Do not introduce a new daemon-like abstraction to replace the removed daemon.
+
+---
+
+## Required workflow for code changes
+
+When implementing a task:
+
+1. **Inspect before editing.**
+   - Find the existing entry point and callers.
+   - Trace the relevant lifecycle through the code.
+   - Check tests/build targets before inventing new mechanisms.
+
+2. **Classify the change.**
+   - Fork-specific removal/adaptation?
+   - Or general upstream functionality?
+
+3. **Choose the smallest integration point.**
+   - Prefer CLI/build boundaries.
+   - Avoid modifying shared core code unless necessary.
+
+4. **Preserve upstream behavior outside the fork boundary.**
+   - Do not opportunistically refactor.
+   - Do not "clean up" unrelated code.
+
+5. **Check for residual dependencies.**
+   After MCP/daemon removal work, search for:
+   - `src/mcp`
+   - `src/daemon`
+   - daemon IPC/socket APIs
+   - MCP/JSON-RPC entry points
+   - daemon startup/shutdown calls
+   - UI paths that still assume daemon ownership
+
+6. **Test the narrowest relevant seam first.**
+   Then run broader tests when the change affects shared infrastructure or release behavior.
+
+7. **Before declaring completion, verify the shipped build.**
+   The release binary must not accidentally compile in or reach MCP/daemon code.
+
+---
+
+## Build and test commands
+
+```bash
+scripts/build.sh
+# standard release build
+
+scripts/build.sh --with-ui
+# release build with graph-viz UI bundled
+
+scripts/test.sh
+# ASan + UBSan + full C test suite
+
+scripts/lint.sh
+# clang-tidy, cppcheck, clang-format
+
+make -f Makefile.cbm test
+# all tests with ASan + UBSan
+
+make -f Makefile.cbm test-foundation
+# foundation tests only
+
+make -f Makefile.cbm cbm
+# production binary
+
+make -f Makefile.cbm security
+# security audit: static allow-list, string scan,
+# network-egress test, fuzzing, etc.
+```
+
+Run a single test only after inspecting how the repository selects tests:
+
+```text
+tests/*.sh
+scripts/test.sh
+```
+
+Do not assume a `-run`, `--filter`, or similar test selector exists.
+
+After cloning, enable the repository's pre-commit checks:
+
+```bash
+git config core.hooksPath scripts/hooks
+```
+
+---
+
+## Security / networking invariant
+
+For production builds, verify that:
+
+- MCP code is absent;
+- daemon code is absent;
+- no Unix-domain daemon socket is created or contacted;
+- no non-loopback listener is opened;
+- the UI, when enabled, binds only to loopback;
+- test-only seams are not compiled into release builds.
+
+Do not weaken these invariants to make a test or implementation easier.
+
+---
 
 ## Test seams
 
-`TEST_SEAMS=1` (`-DCBM_ENABLE_TEST_SEAMS=1`) is opt-in only, never opt-out — code that exists purely for test harnesses (e.g. forcing an orphan process for the watchdog to reap) must never compile into a production/release binary. `scripts/test.sh` passes `TEST_SEAMS=1`; `scripts/build.sh` does not. Preserve this pattern for the fork build target.
+`TEST_SEAMS=1` / `-DCBM_ENABLE_TEST_SEAMS=1` is **opt-in**.
+
+Production builds must not contain test-only seams.
+
+Examples include mechanisms that deliberately create unusual process states so watchdog/reaper behavior can be tested.
+
+Expected build behavior:
+
+```text
+scripts/test.sh     -> TEST_SEAMS=1
+scripts/build.sh    -> TEST_SEAMS disabled
+```
+
+Preserve this distinction for new test-only code.
+
+---
+
+## Language / extraction work
+
+This is generally upstream feature work, not fork-specific work.
+
+Relevant locations:
+
+```text
+internal/cbm/lang_specs.c       grammar/AST node configuration
+internal/cbm/extract_*.c       AST extraction
+src/pipeline/                  pipeline passes
+tests/test_extraction.c        extraction regression tests
+tests/test_pipeline.c          pipeline regression tests
+internal/cbm/regression_test.go legacy parity tests being migrated off Go
+```
+
+Do not add Go code to this fork.
+
+Infra-language support such as Docker/Kubernetes/Kustomize uses the existing infra-pass pattern:
+
+```text
+src/pipeline/pass_infrascan.c
+internal/cbm/extract_k8s.c
+```
+
+and reuses the tree-sitter YAML grammar rather than introducing unnecessary new grammars.
+
+---
+
+## Decision rules
+
+When deciding what to do, use these rules in order:
+
+1. **Does this preserve the no-MCP/no-daemon invariant?**
+2. **Does it preserve localhost-only UI behavior?**
+3. **Can it be implemented without modifying shared upstream core?**
+4. **If shared core must change, is the change minimal and upstream-compatible?**
+5. **Is the change actually fork-specific, or should it be upstream?**
+6. **Are tests covering the changed boundary?**
+
+If two implementations are functionally equivalent, prefer the one with the smaller upstream diff and fewer new abstractions.
+
+---
+
+## Definition of done
+
+A change is complete when:
+
+- the requested behavior works;
+- the relevant tests pass;
+- release builds do not include unintended MCP/daemon behavior;
+- localhost-only networking remains enforced;
+- test seams remain test-only;
+- no unrelated refactoring was introduced;
+- the resulting diff remains straightforward to merge with upstream.
+
+Do not declare success based solely on compilation if the change affects security boundaries, process lifecycle, networking, MCP removal, or daemon removal.

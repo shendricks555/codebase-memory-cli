@@ -90,5 +90,13 @@ verify-cli-only-link: cbm-cli
 	done; \
 	rm -f $(CLI_ONLY_SYMS); \
 	if [ $$fail -ne 0 ]; then exit 1; fi
+	@# Entry-dispatch smoke (E3/E4): non-CLI roles print help, exit 2, never answer JSON-RPC.
+	@fail=0; \
+	for argv in "" "--cbm-daemon-internal" "daemon status"; do \
+		out=$$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize"}' | "$(CLI_ONLY_BIN)" $$argv 2>&1); rc=$$?; \
+		if [ $$rc -eq 2 ] && ! echo "$$out" | grep -q '"jsonrpc"'; then echo "  ok inert: '$$argv' (rc=2)"; \
+		else echo "  FAIL: '$$argv' rc=$$rc or JSON-RPC reply"; fail=1; fi; \
+	done; \
+	if [ $$fail -ne 0 ]; then exit 1; fi
 	@echo "verify-cli-only-link: PASS"
 
